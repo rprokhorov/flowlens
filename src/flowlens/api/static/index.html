@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowLens</title>
+<script src="/static/echarts.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f5f4f1;
+  --surface-1: #fcfcfb;
+  --surface-2: #efeeea;
+  --border:    #dcdbd5;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #86857e;
+
+  /* категориальные слоты: цвет закреплён за фазой, не за рангом */
+  --series-1: #2a78d6;  /* blue    */
+  --series-2: #eb6834;  /* orange  */
+  --series-3: #1baf7a;  /* aqua    */
+  --series-4: #eda100;  /* yellow  */
+  --series-5: #e87ba4;  /* magenta */
+  --series-6: #008300;  /* green   */
+  --series-7: #4a3aa7;  /* violet  */
+  --series-8: #e34948;  /* red     */
+
+  --status-good:     #1baf7a;
+  --status-warning:  #eda100;
+  --status-critical: #e34948;
+  --grid: #e6e5e0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #131312;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --border:    #383835;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8d8c84;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --status-good:     #199e70;
+    --status-warning:  #c98500;
+    --status-critical: #e66767;
+    --grid: #2c2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #131312;
+  --surface-1: #1a1a19;
+  --surface-2: #232322;
+  --border:    #383835;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #8d8c84;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --status-good:     #199e70;
+  --status-warning:  #c98500;
+  --status-critical: #e66767;
+  --grid: #2c2c2a;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 20px;
+  position: sticky; top: 0; z-index: 10;
+}
+.header-row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.subtitle { color: var(--text-muted); font-size: 13px; }
+.spacer { flex: 1; }
+
+/* фильтры — одной строкой над графиками */
+.filters {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  margin-top: 12px;
+}
+.filters label { color: var(--text-secondary); font-size: 12px; margin-right: 4px; }
+select, input[type="date"], button {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font: inherit; font-size: 13px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--text-muted); }
+button.active { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+
+main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
+
+.tiles {
+  display: grid; gap: 12px; margin-bottom: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 13px 15px;
+}
+.tile .label { color: var(--text-secondary); font-size: 12px; margin-bottom: 5px; }
+.tile .value {
+  font-size: 26px; font-weight: 600; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.tile .note { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
+.tile.good .value    { color: var(--status-good); }
+.tile.warning .value { color: var(--status-warning); }
+.tile.critical .value{ color: var(--status-critical); }
+
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(12, 1fr); }
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 15px; min-width: 0;
+}
+.card.w12 { grid-column: span 12; }
+.card.w8  { grid-column: span 8; }
+.card.w6  { grid-column: span 6; }
+.card.w4  { grid-column: span 4; }
+@media (max-width: 1100px) {
+  .card.w8, .card.w6, .card.w4 { grid-column: span 12; }
+}
+.card h2 {
+  margin: 0 0 3px; font-size: 14px; font-weight: 600;
+}
+.card .hint { color: var(--text-muted); font-size: 12px; margin: 0 0 12px; }
+.chart { width: 100%; height: 300px; }
+.chart.tall { height: 360px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-secondary); font-weight: 500; font-size: 12px; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:hover { background: var(--surface-2); }
+.scroll { overflow-x: auto; max-height: 340px; overflow-y: auto; }
+
+.pill {
+  display: inline-block; padding: 1px 7px; border-radius: 20px;
+  font-size: 11px; border: 1px solid var(--border);
+}
+.pill.blocked  { color: var(--status-critical); border-color: var(--status-critical); }
+.pill.over     { color: var(--status-warning);  border-color: var(--status-warning); }
+
+.quality-item { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.quality-item:last-child { border-bottom: none; }
+.quality-count {
+  font-variant-numeric: tabular-nums; font-weight: 600;
+  min-width: 46px; text-align: right; color: var(--status-warning);
+}
+.quality-text { flex: 1; }
+.quality-hint { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.verdict {
+  padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;
+  background: var(--surface-2); border-left: 3px solid var(--status-warning);
+}
+.loading { color: var(--text-muted); padding: 30px; text-align: center; }
+.error {
+  color: var(--status-critical); padding: 14px;
+  border: 1px solid var(--status-critical); border-radius: 8px;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="header-row">
+    <h1>FlowLens</h1>
+    <span class="subtitle" id="period">—</span>
+    <div class="spacer"></div>
+    <button id="theme-toggle" title="Переключить тему">◐</button>
+  </div>
+  <div class="filters">
+    <span><label for="f-from">с</label><input type="date" id="f-from"></span>
+    <span><label for="f-to">по</label><input type="date" id="f-to"></span>
+    <select id="f-type"><option value="">Все типы</option></select>
+    <select id="f-priority"><option value="">Все приоритеты</option></select>
+    <select id="f-component"><option value="">Все компоненты</option></select>
+    <select id="f-confidence">
+      <option value="low">Все данные</option>
+      <option value="medium">Без явных проблем</option>
+      <option value="high">Только надёжные</option>
+    </select>
+    <button id="u-business" class="active">Рабочие часы</button>
+    <button id="u-calendar">Календарные</button>
+  </div>
+</header>
+
+<main>
+  <div class="tiles" id="tiles"></div>
+  <div class="grid" id="grid">
+    <div class="card w12">
+      <h2>Накопительная диаграмма потока</h2>
+      <p class="hint">Ширина полосы — сколько задач в фазе. Растущая полоса означает
+         затор: задачи входят быстрее, чем выходят. Завершённые скрыты —
+         включите «Готово» в легенде, чтобы увидеть общий объём.</p>
+      <div class="chart tall" id="chart-cfd"></div>
+    </div>
+
+    <div class="card w6">
+      <h2>Время цикла</h2>
+      <p class="hint">Распределение по завершённым задачам. Планировать стоит
+         по 85-му перцентилю, а не по среднему.</p>
+      <div class="chart" id="chart-cycle"></div>
+    </div>
+
+    <div class="card w6">
+      <h2>Поступление и закрытие</h2>
+      <p class="hint">Если приходит больше, чем закрывается, очередь растёт.</p>
+      <div class="chart" id="chart-arrival"></div>
+    </div>
+
+    <div class="card w6">
+      <h2>Куда уходит время</h2>
+      <p class="hint">Сколько типичная задача проводит в каждой фазе (медиана).</p>
+      <div class="chart" id="chart-phases"></div>
+    </div>
+
+    <div class="card w6">
+      <h2>Распределение нагрузки</h2>
+      <p class="hint">Время владения задачами, не мера производительности:
+         владеть задачей и работать над ней — не одно и то же.</p>
+      <div class="chart" id="chart-people"></div>
+    </div>
+
+    <div class="card w8">
+      <h2>Что висит сейчас</h2>
+      <p class="hint" id="aging-hint">Задачи старше 85-го перцентиля требуют внимания.</p>
+      <div class="scroll"><table id="table-aging">
+        <thead><tr>
+          <th>Задача</th><th>Статус</th><th>Исполнитель</th>
+          <th class="num">Возраст</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+
+    <div class="card w4">
+      <h2>Качество данных</h2>
+      <p class="hint">Насколько метрикам можно доверять.</p>
+      <div id="quality"><div class="loading">загрузка…</div></div>
+    </div>
+  </div>
+</main>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

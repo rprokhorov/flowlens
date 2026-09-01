@@ -117,12 +117,11 @@ def export_demo_command(
     start = end - timedelta(days=months * 30)
     span = max(1.0, (end - start).total_seconds())
 
+    from flowlens.pipeline import _random_workday_moment
+
     seeds = list(all_scenarios(cal))
     for i in range(tickets):
-        created = start + timedelta(seconds=rng.random() * span)
-        created = created.replace(hour=11, minute=0, second=0, microsecond=0)
-        if created.weekday() >= 5:
-            created += timedelta(days=7 - created.weekday())
+        created = _random_workday_moment(start, end, cal, rng)
         recency = (created - start).total_seconds() / span
         seeds.append(
             random_ticket(
@@ -311,6 +310,21 @@ def recompute_policy_command(
     typer.echo(
         f"Пересчитано по политике '{version}': {result['tickets']} задач, "
         f"с аномалиями {result['anomalous']}, за {time.monotonic() - started:.1f} с"
+    )
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Адрес")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Порт")] = 8000,
+    reload: Annotated[bool, typer.Option("--reload", help="Перезапуск при правках")] = False,
+) -> None:
+    """Запустить дашборд."""
+    import uvicorn
+
+    typer.echo(f"Дашборд: http://{host}:{port}")
+    uvicorn.run(
+        "flowlens.api.app:app", host=host, port=port, reload=reload, log_level="info"
     )
 
 

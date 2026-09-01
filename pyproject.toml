@@ -10,6 +10,10 @@ dependencies = [
     "pydantic>=2",
     "typer",
     "python-dateutil",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "pyyaml",
 ]
 
 [project.scripts]
@@ -18,6 +22,9 @@ flowlens = "flowlens.cli:app"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+"flowlens.api" = ["static/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -157,7 +157,9 @@ def _make_interval(
         cal_s: int | None = 0
         bus_s: int | None = 0
     elif finish is not None:
-        cal_s = int((finish - started_at).total_seconds())
+        # интервал, начавшийся позже «сейчас», не имеет длительности:
+        # это возможно при рассинхроне часов или данных из будущего
+        cal_s = max(0, int((finish - started_at).total_seconds()))
         bus_s = calendar.business_seconds_between(started_at, finish)
     else:
         cal_s = None

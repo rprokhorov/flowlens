@@ -4,3 +4,7 @@ psycopg[binary]
 pydantic>=2
 typer
 python-dateutil
+fastapi
+uvicorn[standard]
+httpx
+pyyaml

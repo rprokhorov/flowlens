@@ -9,3 +9,7 @@ Requires-Dist: psycopg[binary]
 Requires-Dist: pydantic>=2
 Requires-Dist: typer
 Requires-Dist: python-dateutil
+Requires-Dist: fastapi
+Requires-Dist: uvicorn[standard]
+Requires-Dist: httpx
+Requires-Dist: pyyaml

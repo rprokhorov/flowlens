@@ -44,6 +44,8 @@ class TicketBuilder:
     issue_type: str = "Task"
     priority: str = "Medium"
     initial_assignee: str | None = None
+    # предел, за который не должен уходить курсор («сейчас»)
+    horizon: datetime | None = None
 
     _cursor: datetime = field(init=False)
     _status: str = field(init=False, default="new")
@@ -83,9 +85,17 @@ class TicketBuilder:
 
     def _advance(self, business_seconds: int) -> None:
         """Продвинуть курсор на N рабочих секунд, засчитав их текущему статусу."""
-        if business_seconds > 0:
-            self._by_status[self._status] = self._by_status.get(self._status, 0) + business_seconds
-            self._cursor = self.calendar.add_business_seconds(self._cursor, business_seconds)
+        if business_seconds <= 0:
+            return
+        target = self.calendar.add_business_seconds(self._cursor, business_seconds)
+        if self.horizon is not None and target > self.horizon:
+            # упёрлись в «сейчас»: засчитываем только то время, что реально прошло
+            target = max(self._cursor, self.horizon)
+            business_seconds = self.calendar.business_seconds_between(self._cursor, target)
+            if business_seconds <= 0:
+                return
+        self._by_status[self._status] = self._by_status.get(self._status, 0) + business_seconds
+        self._cursor = target
 
     def stay(self, business_seconds: int) -> TicketBuilder:
         """Пробыть в текущем статусе."""

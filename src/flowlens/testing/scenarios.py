@@ -215,6 +215,7 @@ def random_ticket(
         reporter=rng.choice(PEOPLE),
         issue_type=issue_type,
         priority=priority,
+        horizon=horizon,
     )
 
     # багам и блокерам обычно уделяют внимание быстрее
@@ -227,7 +228,9 @@ def random_ticket(
     b.assign(dev).move_to("in progress")
     work = max(HOUR, int(rng.lognormvariate(10.4, 0.9)))
     b.stay(work)
-    if past_horizon():
+    # незавершённость распределяется по фазам: доля задач замирает в разработке,
+    # иначе весь WIP скапливался бы в последней проверяемой фазе
+    if past_horizon() or rng.random() < open_chance * 0.45:
         return b.build(scenario="random_open", summary=f"{issue_type} {key}")
 
     if rng.random() < 0.22:  # блокировка
@@ -238,7 +241,7 @@ def random_ticket(
 
     b.move_to("qa").assign(qa_person)
     b.stay(max(HOUR, int(rng.lognormvariate(9.4, 0.8))))
-    if past_horizon():
+    if past_horizon() or rng.random() < open_chance * 0.35:
         return b.build(scenario="random_open", summary=f"{issue_type} {key}")
 
     if rng.random() < 0.18:  # возврат на доработку
@@ -247,7 +250,7 @@ def random_ticket(
         b.move_to("qa").assign(qa_person)
         b.stay(max(HOUR, int(rng.lognormvariate(9.0, 0.7))))
 
-    if rng.random() < open_chance:  # ещё в работе, не доехал
+    if rng.random() < open_chance * 0.2:  # ждёт релиза
         return b.build(scenario="random_open", summary=f"{issue_type} {key}")
 
     b.move_to("release")

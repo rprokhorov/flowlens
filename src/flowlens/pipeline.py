@@ -28,6 +28,7 @@ from flowlens.repository import (
     save_intervals,
     save_metrics,
     save_metrics_confidence,
+    save_ticket_state,
     save_timeline_facts,
     save_workload,
     upsert_people,
@@ -102,22 +103,29 @@ def _random_workday_moment(
 ) -> datetime:
     """Случайный рабочий момент в интервале.
 
-    Поток заявок неравномерен: понедельник и вторник нагруженнее пятницы.
+    Поток заявок неравномерен: понедельник и вторник нагруженнее пятницы,
+    но час внутри дня распределён равномерно — иначе в накопительной
+    диаграмме появляется искусственная пила.
     """
     span_days = max(1, (end - start).days)
-    weekday_weights = [1.35, 1.25, 1.0, 0.95, 0.7]  # пн..пт
-    for _ in range(100):
-        candidate = start + timedelta(
-            days=rng.randrange(span_days),
-            hours=rng.randrange(0, 9),
-            minutes=rng.randrange(0, 60),
-        )
-        candidate = candidate.replace(hour=10 + candidate.hour % 9)
-        if not cal.is_working_moment(candidate):
+    weekday_weights = [1.2, 1.15, 1.0, 0.95, 0.8]  # пн..пт
+
+    for _ in range(200):
+        day = start.date() + timedelta(days=rng.randrange(span_days))
+        if day.weekday() >= 5:
             continue
-        weight = weekday_weights[candidate.weekday()] if candidate.weekday() < 5 else 0
-        if rng.random() < weight / 1.35:
+        if rng.random() > weekday_weights[day.weekday()] / 1.2:
+            continue
+        windows = cal.day_intervals(day)
+        if not windows:
+            continue
+        # равномерно внутри рабочего дня
+        begin, finish = windows[0][0], windows[-1][1]
+        offset = rng.random() * (finish - begin).total_seconds()
+        candidate = begin + timedelta(seconds=offset)
+        if cal.is_working_moment(candidate):
             return candidate
+
     return cal.add_business_seconds(start, 0)
 
 
@@ -179,6 +187,17 @@ def recompute_all(
             reporter=(row.display_name or "").lower() or None,
         )
         save_metrics(engine, row.id, metrics)
+
+        last = intervals[-1]
+        save_ticket_state(
+            engine,
+            row.id,
+            closed_at=metrics.completed_at,
+            status_id=refs.get(f"status:{last.status}"),
+            assignee_id=(
+                refs.get(f"person:{last.assignee}") if last.assignee else None
+            ),
+        )
 
         declared = load_declared_dates(engine, row.id)
         signals = _build_signals(row.created_at, intervals, metrics, declared)

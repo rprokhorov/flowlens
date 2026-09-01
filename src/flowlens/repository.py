@@ -381,6 +381,36 @@ def save_workload(
             )
 
 
+def save_ticket_state(
+    engine: Engine,
+    ticket_id: int,
+    *,
+    closed_at: datetime | None,
+    status_id: int | None,
+    assignee_id: int | None,
+) -> None:
+    """Синхронизировать текущее состояние тикета с результатом пересчёта.
+
+    closed_at выводится из интервалов, а не из полей источника: разные
+    системы понимают «закрыт» по-разному, а терминальный статус — однозначен.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE ticket SET closed_at = :closed, "
+                "  current_status_id = COALESCE(:status, current_status_id), "
+                "  current_assignee_id = :assignee "
+                "WHERE id = :tid"
+            ),
+            {
+                "tid": ticket_id,
+                "closed": closed_at,
+                "status": status_id,
+                "assignee": assignee_id,
+            },
+        )
+
+
 def save_timeline_facts(engine: Engine, ticket_id: int, facts) -> None:
     """Записать результат согласования по обеим границам."""
     with engine.begin() as conn:
