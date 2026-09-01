@@ -5,241 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlowLens</title>
 <script src="/static/echarts.min.js"></script>
-<style>
-:root {
-  color-scheme: light;
-  --surface-0: #f5f4f1;
-  --surface-1: #fcfcfb;
-  --surface-2: #efeeea;
-  --border:    #dcdbd5;
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #86857e;
-
-  /* категориальные слоты: цвет закреплён за фазой, не за рангом */
-  --series-1: #2a78d6;  /* blue    */
-  --series-2: #eb6834;  /* orange  */
-  --series-3: #1baf7a;  /* aqua    */
-  --series-4: #eda100;  /* yellow  */
-  --series-5: #e87ba4;  /* magenta */
-  --series-6: #008300;  /* green   */
-  --series-7: #4a3aa7;  /* violet  */
-  --series-8: #e34948;  /* red     */
-
-  --status-good:     #1baf7a;
-  --status-warning:  #eda100;
-  --status-critical: #e34948;
-  --grid: #e6e5e0;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --surface-0: #131312;
-    --surface-1: #1a1a19;
-    --surface-2: #232322;
-    --border:    #383835;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #8d8c84;
-    --series-1: #3987e5;
-    --series-2: #d95926;
-    --series-3: #199e70;
-    --series-4: #c98500;
-    --series-5: #d55181;
-    --series-6: #008300;
-    --series-7: #9085e9;
-    --series-8: #e66767;
-    --status-good:     #199e70;
-    --status-warning:  #c98500;
-    --status-critical: #e66767;
-    --grid: #2c2c2a;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --surface-0: #131312;
-  --surface-1: #1a1a19;
-  --surface-2: #232322;
-  --border:    #383835;
-  --text-primary:   #ffffff;
-  --text-secondary: #c3c2b7;
-  --text-muted:     #8d8c84;
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --series-4: #c98500;
-  --series-5: #d55181;
-  --series-6: #008300;
-  --series-7: #9085e9;
-  --series-8: #e66767;
-  --status-good:     #199e70;
-  --status-warning:  #c98500;
-  --status-critical: #e66767;
-  --grid: #2c2c2a;
-}
-
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--surface-0);
-  color: var(--text-primary);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
-header {
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border);
-  padding: 14px 20px;
-  position: sticky; top: 0; z-index: 10;
-}
-.header-row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
-h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
-.subtitle { color: var(--text-muted); font-size: 13px; }
-.spacer { flex: 1; }
-
-/* фильтры — одной строкой над графиками */
-.filters {
-  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
-  margin-top: 12px;
-}
-.filters label { color: var(--text-secondary); font-size: 12px; margin-right: 4px; }
-select, input[type="date"], button {
-  background: var(--surface-2);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 9px;
-  font: inherit; font-size: 13px;
-}
-button { cursor: pointer; }
-button:hover { border-color: var(--text-muted); }
-button.active { background: var(--series-1); border-color: var(--series-1); color: #fff; }
-
-main { padding: 18px 20px 40px; max-width: 1500px; margin: 0 auto; }
-
-.tiles {
-  display: grid; gap: 12px; margin-bottom: 18px;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-}
-.tile {
-  background: var(--surface-1); border: 1px solid var(--border);
-  border-radius: 10px; padding: 13px 15px;
-}
-.tile .label { color: var(--text-secondary); font-size: 12px; margin-bottom: 5px; }
-.tile .value {
-  font-size: 26px; font-weight: 600; letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-.tile .note { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
-.tile.good .value    { color: var(--status-good); }
-.tile.warning .value { color: var(--status-warning); }
-.tile.critical .value{ color: var(--status-critical); }
-
-.grid { display: grid; gap: 14px; grid-template-columns: repeat(12, 1fr); }
-.card {
-  background: var(--surface-1); border: 1px solid var(--border);
-  border-radius: 10px; padding: 15px; min-width: 0;
-}
-.card.w12 { grid-column: span 12; }
-.card.w8  { grid-column: span 8; }
-.card.w6  { grid-column: span 6; }
-.card.w4  { grid-column: span 4; }
-@media (max-width: 1100px) {
-  .card.w8, .card.w6, .card.w4 { grid-column: span 12; }
-}
-.card h2 {
-  margin: 0 0 3px; font-size: 14px; font-weight: 600;
-}
-.card .hint { color: var(--text-muted); font-size: 12px; margin: 0 0 12px; }
-.chart { width: 100%; height: 300px; }
-.chart.tall { height: 360px; }
-
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-th { color: var(--text-secondary); font-weight: 500; font-size: 12px; }
-td.num { text-align: right; font-variant-numeric: tabular-nums; }
-tbody tr:hover { background: var(--surface-2); }
-.scroll { overflow-x: auto; max-height: 340px; overflow-y: auto; }
-
-.pill {
-  display: inline-block; padding: 1px 7px; border-radius: 20px;
-  font-size: 11px; border: 1px solid var(--border);
-}
-.pill.blocked  { color: var(--status-critical); border-color: var(--status-critical); }
-.pill.over     { color: var(--status-warning);  border-color: var(--status-warning); }
-
-.quality-item { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
-.quality-item:last-child { border-bottom: none; }
-.quality-count {
-  font-variant-numeric: tabular-nums; font-weight: 600;
-  min-width: 46px; text-align: right; color: var(--status-warning);
-}
-.quality-text { flex: 1; }
-.quality-hint { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
-.verdict {
-  padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;
-  background: var(--surface-2); border-left: 3px solid var(--status-warning);
-}
-.loading { color: var(--text-muted); padding: 30px; text-align: center; }
-
-.finding {
-  display: flex; gap: 12px; padding: 11px 0;
-  border-bottom: 1px solid var(--border);
-}
-.finding:last-child { border-bottom: none; }
-.finding-mark {
-  flex: 0 0 4px; border-radius: 2px; align-self: stretch;
-}
-.finding.act .finding-mark   { background: var(--status-critical); }
-.finding.watch .finding-mark { background: var(--status-warning); }
-.finding.info .finding-mark  { background: var(--text-muted); }
-.finding-body { flex: 1; min-width: 0; }
-.finding-title { font-weight: 600; margin-bottom: 3px; }
-.finding-detail { color: var(--text-secondary); font-size: 13px; }
-.finding-suggestion {
-  color: var(--text-muted); font-size: 13px; margin-top: 4px;
-  padding-left: 12px; border-left: 2px solid var(--border);
-}
-.finding-tickets { margin-top: 6px; display: flex; gap: 5px; flex-wrap: wrap; }
-.finding-tickets .pill { color: var(--text-secondary); }
-.no-findings { color: var(--text-muted); padding: 8px 0; }
-
-#explain { margin-top: 4px; }
-.explain-text {
-  white-space: pre-wrap; line-height: 1.65;
-  max-width: 76ch; color: var(--text-primary);
-}
-.explain-text p { margin: 0 0 12px; }
-.explain-unavailable { color: var(--text-muted); font-size: 13px; }
-
-.forecast-grid {
-  display: grid; gap: 18px;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-}
-.forecast-block h3 {
-  margin: 0 0 8px; font-size: 13px; font-weight: 600;
-  color: var(--text-secondary);
-}
-.forecast-row {
-  display: flex; align-items: baseline; gap: 10px; padding: 4px 0;
-}
-.forecast-prob {
-  color: var(--text-muted); font-size: 12px;
-  min-width: 42px; font-variant-numeric: tabular-nums;
-}
-.forecast-value { font-weight: 600; font-variant-numeric: tabular-nums; }
-.forecast-when { color: var(--text-secondary); font-size: 12px; }
-.forecast-note {
-  color: var(--text-muted); font-size: 12px; margin-top: 10px;
-  padding-left: 12px; border-left: 2px solid var(--border);
-}
-.forecast-warning {
-  color: var(--status-warning); font-size: 13px; padding: 8px 0;
-}
-.error {
-  color: var(--status-critical); padding: 14px;
-  border: 1px solid var(--status-critical); border-radius: 8px;
-}
-</style>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
@@ -249,6 +15,19 @@ tbody tr:hover { background: var(--surface-2); }
     <div class="spacer"></div>
     <button id="theme-toggle" title="Переключить тему">◐</button>
   </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-tab="overview">Обзор</button>
+    <button class="tab" data-tab="flow">Поток</button>
+    <button class="tab" data-tab="cycle">Время цикла</button>
+    <button class="tab" data-tab="phases">Где время</button>
+    <button class="tab" data-tab="wip">Незавершённое</button>
+    <button class="tab" data-tab="people">Нагрузка</button>
+    <button class="tab" data-tab="forecast">Прогноз</button>
+    <button class="tab" data-tab="quality">Качество данных</button>
+    <button class="tab" data-tab="tickets">Задачи</button>
+  </nav>
+
   <div class="filters">
     <span><label for="f-from">с</label><input type="date" id="f-from"></span>
     <span><label for="f-to">по</label><input type="date" id="f-to"></span>
@@ -266,70 +45,105 @@ tbody tr:hover { background: var(--surface-2); }
 </header>
 
 <main>
-  <div class="tiles" id="tiles"></div>
-  <div class="grid" id="grid">
-    <div class="card w12" id="explain-card">
-      <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
-        <h2 style="margin:0">Разбор</h2>
-        <button id="explain-btn">Получить разбор</button>
+  <!-- ОБЗОР -->
+  <section class="panel" data-panel="overview">
+    <div class="tiles" id="tiles"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Разбор</h2>
+        <button id="explain-btn" class="ghost">Получить разбор</button>
       </div>
-      <p class="hint">Связный текст по тем же метрикам, что показаны ниже.
+      <p class="hint">Связный текст по метрикам выбранного периода.
          Требует ключа Anthropic в окружении сервера.</p>
       <div id="explain"></div>
     </div>
 
-    <div class="card w12" id="advice-card">
+    <div class="card">
       <h2>На что стоит посмотреть</h2>
       <p class="hint">Наблюдения по фиксированным правилам — не оценка команды,
          а подсказка, где искать причины.</p>
       <div id="advice"><div class="loading">загрузка…</div></div>
     </div>
+  </section>
 
-    <div class="card w12">
-      <h2>Накопительная диаграмма потока</h2>
-      <p class="hint">Ширина полосы — сколько задач в фазе. Растущая полоса означает
-         затор: задачи входят быстрее, чем выходят. Завершённые скрыты —
-         включите «Готово» в легенде, чтобы увидеть общий объём.</p>
+  <!-- ПОТОК -->
+  <section class="panel" data-panel="flow">
+    <div class="card">
+      <div class="card-head">
+        <h2>Накопительная диаграмма потока</h2>
+        <button class="ghost" data-data-for="cfd">Данные</button>
+      </div>
+      <p class="hint">Ширина полосы — сколько задач в фазе на каждый день.
+         Растущая полоса означает затор: задачи входят быстрее, чем выходят.
+         Завершённые скрыты — включите «Готово» в легенде, чтобы увидеть общий объём.</p>
       <div class="chart tall" id="chart-cfd"></div>
     </div>
 
-    <div class="card w6">
-      <h2>Время цикла</h2>
-      <p class="hint">Распределение по завершённым задачам. Планировать стоит
-         по 85-му перцентилю, а не по среднему.</p>
-      <div class="chart" id="chart-cycle"></div>
-    </div>
-
-    <div class="card w6">
-      <h2>Поступление и закрытие</h2>
-      <p class="hint">Если приходит больше, чем закрывается, очередь растёт.</p>
+    <div class="card">
+      <div class="card-head">
+        <h2>Поступление и закрытие</h2>
+        <button class="ghost" data-data-for="arrival">Данные</button>
+      </div>
+      <p class="hint">Если приходит больше, чем закрывается, очередь растёт.
+         Разрыв между линиями накапливается, даже когда каждая задача делается быстро.</p>
       <div class="chart" id="chart-arrival"></div>
     </div>
+  </section>
 
-    <div class="card w12" id="forecast-card">
-      <h2>Прогноз</h2>
-      <p class="hint">Построен на историческом темпе закрытия, а не на оценках
-         трудоёмкости. Вероятность — не осторожность, а честный разброс:
-         одна дата всегда скрывает неопределённость.</p>
-      <div id="forecast"><div class="loading">загрузка…</div></div>
+  <!-- ВРЕМЯ ЦИКЛА -->
+  <section class="panel" data-panel="cycle">
+    <div class="card">
+      <div class="card-head">
+        <h2>Распределение времени цикла</h2>
+        <button class="ghost" data-data-for="cycle">Данные</button>
+      </div>
+      <p class="hint">По завершённым задачам. Планировать стоит по 85-му перцентилю:
+         среднее скрывает длинный хвост, из-за которого срываются сроки.</p>
+      <div class="chart tall" id="chart-cycle"></div>
+      <div id="cycle-stats" class="stat-row"></div>
     </div>
 
-    <div class="card w6">
-      <h2>Куда уходит время</h2>
-      <p class="hint">Сколько типичная задача проводит в каждой фазе (медиана).</p>
+    <div class="card">
+      <h2>Самые долгие задачи</h2>
+      <p class="hint">Хвост распределения — обычно там и находятся причины.</p>
+      <div class="scroll" id="cycle-slowest"></div>
+    </div>
+  </section>
+
+  <!-- ГДЕ ВРЕМЯ -->
+  <section class="panel" data-panel="phases">
+    <div class="card">
+      <div class="card-head">
+        <h2>Сколько задача проводит в каждой фазе</h2>
+        <button class="ghost" data-data-for="phases">Данные</button>
+      </div>
+      <p class="hint">Медиана по одной задаче. Фаза с наибольшим значением —
+         там, где сокращение даст наибольший эффект.</p>
       <div class="chart" id="chart-phases"></div>
     </div>
 
-    <div class="card w6">
-      <h2>Распределение нагрузки</h2>
-      <p class="hint">Время владения задачами, не мера производительности:
-         владеть задачей и работать над ней — не одно и то же.</p>
-      <div class="chart" id="chart-people"></div>
+    <div class="card">
+      <h2>Работа против ожидания</h2>
+      <p class="hint">Эффективность потока — доля времени, когда над задачей
+         действительно работали.</p>
+      <div class="chart" id="chart-efficiency"></div>
+    </div>
+  </section>
+
+  <!-- НЕЗАВЕРШЁННОЕ -->
+  <section class="panel" data-panel="wip">
+    <div class="card">
+      <div class="card-head">
+        <h2>Что висит сейчас</h2>
+        <button class="ghost" data-data-for="wip">Данные</button>
+      </div>
+      <p class="hint" id="aging-hint"></p>
+      <div class="chart" id="chart-aging"></div>
     </div>
 
-    <div class="card w8">
-      <h2>Что висит сейчас</h2>
-      <p class="hint" id="aging-hint">Задачи старше 85-го перцентиля требуют внимания.</p>
+    <div class="card">
+      <h2>Список незавершённых</h2>
       <div class="scroll"><table id="table-aging">
         <thead><tr>
           <th>Задача</th><th>Статус</th><th>Исполнитель</th>
@@ -338,14 +152,114 @@ tbody tr:hover { background: var(--surface-2); }
         <tbody></tbody>
       </table></div>
     </div>
+  </section>
 
-    <div class="card w4">
-      <h2>Качество данных</h2>
-      <p class="hint">Насколько метрикам можно доверять.</p>
+  <!-- НАГРУЗКА -->
+  <section class="panel" data-panel="people">
+    <div class="card">
+      <div class="card-head">
+        <h2>Распределение нагрузки</h2>
+        <button class="ghost" data-data-for="people">Данные</button>
+      </div>
+      <p class="hint">Время владения задачами. Это не мера производительности:
+         владеть задачей и работать над ней — не одно и то же, а часть времени
+         задача может стоять заблокированной.</p>
+      <div class="chart tall" id="chart-people"></div>
+    </div>
+
+    <div class="card">
+      <h2>По людям</h2>
+      <div class="scroll" id="people-table"></div>
+    </div>
+  </section>
+
+  <!-- ПРОГНОЗ -->
+  <section class="panel" data-panel="forecast">
+    <div class="card">
+      <div class="card-head">
+        <h2>Прогноз</h2>
+        <button class="ghost" data-data-for="throughput">Данные</button>
+      </div>
+      <p class="hint">Построен на историческом темпе закрытия, а не на оценках
+         трудоёмкости. Вероятность — не осторожность, а честный разброс:
+         одна дата всегда скрывает неопределённость.</p>
+      <div id="forecast"><div class="loading">загрузка…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Темп закрытия по неделям</h2>
+      <p class="hint">Выборка, на которой строится прогноз. Чем ровнее темп,
+         тем уже разброс предсказания.</p>
+      <div class="chart" id="chart-throughput"></div>
+    </div>
+  </section>
+
+  <!-- КАЧЕСТВО ДАННЫХ -->
+  <section class="panel" data-panel="quality">
+    <div class="card">
+      <h2>Достоверность метрик</h2>
+      <p class="hint">Пока значительная часть данных ненадёжна, средние значения
+         и прогнозы смещены. Этот раздел стоит смотреть первым.</p>
       <div id="quality"><div class="loading">загрузка…</div></div>
     </div>
-  </div>
+
+    <div class="card">
+      <h2>Источник итогового времени работы</h2>
+      <p class="hint">Ядро хранит и историю статусов, и даты, проставленные вручную,
+         затем выбирает по политике. Здесь видно, что чем оказалось.</p>
+      <div class="chart" id="chart-sources"></div>
+    </div>
+  </section>
+
+  <!-- ЗАДАЧИ -->
+  <section class="panel" data-panel="tickets">
+    <div class="card">
+      <div class="card-head">
+        <h2>Задачи</h2>
+        <span class="hint" id="tickets-count"></span>
+      </div>
+      <div class="table-controls">
+        <input type="search" id="t-search" placeholder="Ключ или название…">
+        <select id="t-sort">
+          <option value="cycle_time">Время цикла</option>
+          <option value="lead_time">Общее время</option>
+          <option value="blocked">Время в блокировке</option>
+          <option value="flow_efficiency">Эффективность</option>
+          <option value="created">Дата создания</option>
+          <option value="reopens">Переоткрытия</option>
+          <option value="key">Ключ</option>
+        </select>
+        <select id="t-order">
+          <option value="desc">по убыванию</option>
+          <option value="asc">по возрастанию</option>
+        </select>
+        <select id="t-anomaly">
+          <option value="">Все задачи</option>
+        </select>
+        <label class="check">
+          <input type="checkbox" id="t-open"> только незавершённые
+        </label>
+      </div>
+      <div class="scroll tall" id="tickets-table"></div>
+      <div class="pager">
+        <button id="t-prev" class="ghost">← назад</button>
+        <span id="t-page"></span>
+        <button id="t-next" class="ghost">вперёд →</button>
+      </div>
+    </div>
+  </section>
 </main>
+
+<!-- модальное окно: данные графика или карточка задачи -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="modal-title">—</h2>
+      <button id="modal-close" class="ghost">✕</button>
+    </div>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
 
 <script src="/static/dashboard.js"></script>
 </body>

@@ -215,10 +215,117 @@ def test_forecast_horizon_parameter(client) -> None:
         )
 
 
+# --- просмотр исходных данных ------------------------------------------------
+
+
+def test_ticket_list(client) -> None:
+    data = client.get("/api/tickets?limit=10").json()
+    assert data["total"] > 0
+    assert len(data["items"]) <= 10
+    for item in data["items"]:
+        assert item["key"]
+        assert isinstance(item["anomalies"], list)
+
+
+def test_ticket_list_pagination(client) -> None:
+    first = client.get("/api/tickets?limit=5&offset=0").json()
+    second = client.get("/api/tickets?limit=5&offset=5").json()
+    assert first["total"] == second["total"]
+    first_keys = {i["key"] for i in first["items"]}
+    second_keys = {i["key"] for i in second["items"]}
+    assert not (first_keys & second_keys), "страницы не должны пересекаться"
+
+
+def test_ticket_list_sorting(client) -> None:
+    data = client.get("/api/tickets?sort=cycle_time&order=desc&limit=20").json()
+    values = [i["cycle_s"] for i in data["items"] if i["cycle_s"] is not None]
+    assert values == sorted(values, reverse=True)
+
+
+def test_ticket_list_search(client) -> None:
+    everything = client.get("/api/tickets?limit=1").json()
+    key = client.get("/api/tickets?limit=1").json()["items"][0]["key"]
+    found = client.get(f"/api/tickets?search={key}").json()
+    assert found["total"] >= 1
+    assert found["total"] < everything["total"]
+
+
+def test_ticket_list_cycle_range(client) -> None:
+    """Фильтр по диапазону — это переход от столбца гистограммы к задачам."""
+    data = client.get("/api/tickets?min_cycle_s=0&max_cycle_s=36000&limit=50").json()
+    for item in data["items"]:
+        assert item["cycle_s"] is None or 0 <= item["cycle_s"] < 36000
+
+
+def test_ticket_list_only_open(client) -> None:
+    data = client.get("/api/tickets?only_open=true&limit=20").json()
+    for item in data["items"]:
+        assert item["closed_at"] is None
+
+
+def test_ticket_list_anomaly_filter(client) -> None:
+    quality = client.get("/api/quality").json()
+    if not quality["anomalies"]:
+        return
+    code = quality["anomalies"][0]["code"]
+    data = client.get(f"/api/tickets?anomaly={code}&limit=20").json()
+    assert data["total"] > 0
+    for item in data["items"]:
+        assert code in item["anomalies"]
+
+
+def test_ticket_detail(client) -> None:
+    """Карточка задачи содержит всё для разбора: события, интервалы, согласование."""
+    key = client.get("/api/tickets?limit=1").json()["items"][0]["key"]
+    data = client.get(f"/api/tickets/{key}").json()
+    assert data["key"] == key
+    assert data["intervals"]
+    assert data["events"]
+    assert data["events"][0]["kind"] == "created"
+    assert data["timeline_facts"]
+    assert data["metrics"]
+
+
+def test_ticket_detail_shows_reconciliation(client) -> None:
+    """Видно оба сигнала и решение ядра."""
+    key = client.get("/api/tickets?limit=1").json()["items"][0]["key"]
+    data = client.get(f"/api/tickets/{key}").json()
+    for fact in data["timeline_facts"]:
+        assert fact["boundary"] in ("work_start", "work_end")
+        assert fact["chosen_source"]
+        assert fact["confidence"]
+
+
+def test_ticket_intervals_are_ordered(client) -> None:
+    key = client.get("/api/tickets?limit=1").json()["items"][0]["key"]
+    data = client.get(f"/api/tickets/{key}").json()
+    seqs = [i["seq"] for i in data["intervals"]]
+    assert seqs == sorted(seqs)
+
+
+def test_ticket_detail_not_found(client) -> None:
+    assert client.get("/api/tickets/NOPE-999").status_code == 404
+
+
+def test_phase_intervals(client) -> None:
+    data = client.get("/api/phase-intervals").json()
+    assert data["items"]
+    durations = [i["business_s"] for i in data["items"]]
+    assert durations == sorted(durations, reverse=True)
+
+
+def test_phase_intervals_filtered(client) -> None:
+    data = client.get("/api/phase-intervals?phase=in_progress").json()
+    for item in data["items"]:
+        assert item["phase"] == "in_progress"
+
+
 def test_all_endpoints_return_200(client) -> None:
     endpoints = [
         "/api/advice",
         "/api/forecast",
+        "/api/tickets",
+        "/api/phase-intervals",
         "/api/summary",
         "/api/cycle-time",
         "/api/cfd",

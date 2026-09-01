@@ -656,6 +656,372 @@ __all__ = [
     "interventions",
     "open_backlog_size",
     "people_load",
+    "phase_time_rows",
     "summary",
     "throughput_history",
+    "ticket_detail",
+    "ticket_list",
 ]
+
+
+# --- просмотр исходных данных ------------------------------------------------
+
+
+def ticket_list(
+    engine: Engine,
+    filters: Filters,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    sort: str = "cycle_time",
+    order: str = "desc",
+    search: str | None = None,
+    only_open: bool = False,
+    min_cycle_s: int | None = None,
+    max_cycle_s: int | None = None,
+    anomaly: str | None = None,
+) -> dict[str, Any]:
+    """Список задач с метриками — то, из чего складываются графики."""
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    conditions = _ticket_conditions(filters, params)
+
+    if only_open:
+        conditions.append("t.closed_at IS NULL")
+    if search:
+        conditions.append("(t.external_key ILIKE :search OR t.summary ILIKE :search)")
+        params["search"] = f"%{search}%"
+    if min_cycle_s is not None:
+        conditions.append(f"m.{filters.metric_column('cycle_time')} >= :min_cycle")
+        params["min_cycle"] = min_cycle_s
+    if max_cycle_s is not None:
+        conditions.append(f"m.{filters.metric_column('cycle_time')} < :max_cycle")
+        params["max_cycle"] = max_cycle_s
+    if anomaly:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM ticket_timeline_fact f "
+            "WHERE f.ticket_id = t.id AND :anomaly = ANY(f.anomaly_flags))"
+        )
+        params["anomaly"] = anomaly
+
+    confidence = _confidence_condition(filters, params)
+    if confidence:
+        conditions.append(confidence)
+
+    sort_columns = {
+        "cycle_time": f"m.{filters.metric_column('cycle_time')}",
+        "lead_time": f"m.{filters.metric_column('lead_time')}",
+        "created": "t.created_at",
+        "key": "t.external_key",
+        "blocked": "m.blocked_time_business_s",
+        "flow_efficiency": "m.flow_efficiency",
+        "reopens": "m.reopen_count",
+    }
+    sort_column = sort_columns.get(sort, sort_columns["cycle_time"])
+    direction = "DESC" if order.lower() == "desc" else "ASC"
+
+    where = _where(conditions)
+    count_query = f"""
+        SELECT count(*) FROM ticket t
+        LEFT JOIN ticket_metrics m ON m.ticket_id = t.id
+        {where}
+    """
+    query = f"""
+        SELECT t.external_key, t.summary, t.issue_type, t.priority, t.components,
+               t.created_at, t.closed_at, t.is_subtask,
+               ws.external_name AS status,
+               p.display_name AS assignee,
+               m.{filters.metric_column('cycle_time')} AS cycle_s,
+               m.{filters.metric_column('lead_time')} AS lead_s,
+               m.touch_time_business_s, m.queue_time_business_s,
+               m.blocked_time_business_s, m.flow_efficiency,
+               m.reopen_count, m.assignee_change_count, m.status_change_count,
+               m.confidence,
+               (SELECT array_agg(DISTINCT a) FROM ticket_timeline_fact f,
+                       unnest(f.anomaly_flags) a WHERE f.ticket_id = t.id) AS anomalies
+        FROM ticket t
+        LEFT JOIN ticket_metrics m ON m.ticket_id = t.id
+        LEFT JOIN workflow_status ws ON ws.id = t.current_status_id
+        LEFT JOIN person p ON p.id = t.current_assignee_id
+        {where}
+        ORDER BY {sort_column} {direction} NULLS LAST, t.id
+        LIMIT :limit OFFSET :offset
+    """
+
+    with engine.begin() as conn:
+        total = conn.execute(text(count_query), params).scalar_one()
+        rows = conn.execute(text(query), params).all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "unit": filters.unit,
+        "items": [
+            {
+                "key": r.external_key,
+                "summary": r.summary,
+                "type": r.issue_type,
+                "priority": r.priority,
+                "components": list(r.components or []),
+                "is_subtask": r.is_subtask,
+                "status": r.status,
+                "assignee": r.assignee,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+                "cycle_s": r.cycle_s,
+                "lead_s": r.lead_s,
+                "touch_s": r.touch_time_business_s,
+                "queue_s": r.queue_time_business_s,
+                "blocked_s": r.blocked_time_business_s,
+                "flow_efficiency": (
+                    float(r.flow_efficiency) if r.flow_efficiency is not None else None
+                ),
+                "reopens": r.reopen_count,
+                "assignee_changes": r.assignee_change_count,
+                "status_changes": r.status_change_count,
+                "confidence": r.confidence,
+                "anomalies": list(r.anomalies or []),
+            }
+            for r in rows
+        ],
+    }
+
+
+def ticket_detail(engine: Engine, key: str) -> dict[str, Any] | None:
+    """Полная история задачи: интервалы, события, согласование дат.
+
+    Это тот уровень, на котором видно, откуда взялась метрика и почему
+    ядро приняло именно такое решение о времени работы.
+    """
+    with engine.begin() as conn:
+        ticket = conn.execute(
+            text(
+                "SELECT t.id, t.external_key, t.summary, t.issue_type, t.priority, "
+                "       t.components, t.labels, t.is_subtask, t.created_at, "
+                "       t.resolved_at, t.closed_at, t.story_points, t.raw_fields, "
+                "       ws.external_name AS status, p.display_name AS assignee, "
+                "       r.display_name AS reporter, s.name AS source "
+                "FROM ticket t "
+                "LEFT JOIN workflow_status ws ON ws.id = t.current_status_id "
+                "LEFT JOIN person p ON p.id = t.current_assignee_id "
+                "LEFT JOIN person r ON r.id = t.reporter_id "
+                "LEFT JOIN source s ON s.id = t.source_id "
+                "WHERE t.external_key = :key"
+            ),
+            {"key": key},
+        ).one_or_none()
+
+        if ticket is None:
+            return None
+
+        intervals = conn.execute(
+            text(
+                "SELECT i.seq, ws.external_name AS status, CAST(i.phase AS text) AS phase, "
+                "       p.display_name AS assignee, i.is_blocked, "
+                "       bs.external_name AS blocked_from, "
+                "       i.started_at, i.ended_at, "
+                "       i.duration_calendar_s, i.duration_business_s "
+                "FROM ticket_interval i "
+                "JOIN workflow_status ws ON ws.id = i.status_id "
+                "LEFT JOIN workflow_status bs ON bs.id = i.blocked_from_status_id "
+                "LEFT JOIN person p ON p.id = i.assignee_id "
+                "WHERE i.ticket_id = :tid ORDER BY i.seq"
+            ),
+            {"tid": ticket.id},
+        ).all()
+
+        events = conn.execute(
+            text(
+                "SELECT CAST(e.kind AS text) AS kind, e.occurred_at, "
+                "       p.display_name AS actor, e.field, e.old_value, e.new_value, "
+                "       e.source_event_id "
+                "FROM ticket_event e LEFT JOIN person p ON p.id = e.actor_person_id "
+                "WHERE e.ticket_id = :tid ORDER BY e.occurred_at, e.id"
+            ),
+            {"tid": ticket.id},
+        ).all()
+
+        declared = conn.execute(
+            text(
+                "SELECT boundary, value_at, precision, source_field "
+                "FROM ticket_declared_date WHERE ticket_id = :tid"
+            ),
+            {"tid": ticket.id},
+        ).all()
+
+        facts = conn.execute(
+            text(
+                "SELECT boundary, system_at, declared_at, effective_at, chosen_source, "
+                "       confidence, discrepancy_business_s, anomaly_flags, policy_version "
+                "FROM ticket_timeline_fact WHERE ticket_id = :tid ORDER BY boundary"
+            ),
+            {"tid": ticket.id},
+        ).all()
+
+        metrics = conn.execute(
+            text("SELECT * FROM ticket_metrics WHERE ticket_id = :tid"),
+            {"tid": ticket.id},
+        ).one_or_none()
+
+        comments = conn.execute(
+            text(
+                "SELECT p.display_name AS author, c.created_at, c.body, c.is_internal "
+                "FROM ticket_comment c LEFT JOIN person p ON p.id = c.author_person_id "
+                "WHERE c.ticket_id = :tid ORDER BY c.created_at"
+            ),
+            {"tid": ticket.id},
+        ).all()
+
+        links = conn.execute(
+            text(
+                "SELECT l.link_type, t2.external_key AS to_key "
+                "FROM ticket_link l JOIN ticket t2 ON t2.id = l.to_ticket_id "
+                "WHERE l.from_ticket_id = :tid"
+            ),
+            {"tid": ticket.id},
+        ).all()
+
+    return {
+        "key": ticket.external_key,
+        "summary": ticket.summary,
+        "type": ticket.issue_type,
+        "priority": ticket.priority,
+        "components": list(ticket.components or []),
+        "labels": list(ticket.labels or []),
+        "is_subtask": ticket.is_subtask,
+        "status": ticket.status,
+        "assignee": ticket.assignee,
+        "reporter": ticket.reporter,
+        "source": ticket.source,
+        "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+        "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
+        "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
+        "story_points": float(ticket.story_points) if ticket.story_points else None,
+        "raw_fields": ticket.raw_fields,
+        "intervals": [
+            {
+                "seq": i.seq,
+                "status": i.status,
+                "phase": i.phase,
+                "assignee": i.assignee,
+                "is_blocked": i.is_blocked,
+                "blocked_from": i.blocked_from,
+                "started_at": i.started_at.isoformat(),
+                "ended_at": i.ended_at.isoformat() if i.ended_at else None,
+                "calendar_s": i.duration_calendar_s,
+                "business_s": i.duration_business_s,
+            }
+            for i in intervals
+        ],
+        "events": [
+            {
+                "kind": e.kind,
+                "occurred_at": e.occurred_at.isoformat(),
+                "actor": e.actor,
+                "field": e.field,
+                "old_value": e.old_value,
+                "new_value": e.new_value,
+                "source_event_id": e.source_event_id,
+            }
+            for e in events
+        ],
+        "declared_dates": [
+            {
+                "boundary": d.boundary,
+                "value_at": d.value_at.isoformat(),
+                "precision": d.precision,
+                "source_field": d.source_field,
+            }
+            for d in declared
+        ],
+        "timeline_facts": [
+            {
+                "boundary": f.boundary,
+                "system_at": f.system_at.isoformat() if f.system_at else None,
+                "declared_at": f.declared_at.isoformat() if f.declared_at else None,
+                "effective_at": f.effective_at.isoformat() if f.effective_at else None,
+                "chosen_source": f.chosen_source,
+                "confidence": f.confidence,
+                "discrepancy_business_s": f.discrepancy_business_s,
+                "anomalies": list(f.anomaly_flags or []),
+                "policy_version": f.policy_version,
+            }
+            for f in facts
+        ],
+        "metrics": (
+            {
+                "lead_calendar_s": metrics.lead_time_calendar_s,
+                "lead_business_s": metrics.lead_time_business_s,
+                "cycle_calendar_s": metrics.cycle_time_calendar_s,
+                "cycle_business_s": metrics.cycle_time_business_s,
+                "touch_s": metrics.touch_time_business_s,
+                "queue_s": metrics.queue_time_business_s,
+                "blocked_s": metrics.blocked_time_business_s,
+                "release_wait_s": metrics.release_wait_business_s,
+                "flow_efficiency": (
+                    float(metrics.flow_efficiency)
+                    if metrics.flow_efficiency is not None
+                    else None
+                ),
+                "reopens": metrics.reopen_count,
+                "assignee_changes": metrics.assignee_change_count,
+                "status_changes": metrics.status_change_count,
+                "blocked_episodes": metrics.blocked_episode_count,
+                "confidence": metrics.confidence,
+            }
+            if metrics
+            else None
+        ),
+        "comments": [
+            {
+                "author": c.author,
+                "created_at": c.created_at.isoformat(),
+                "body": c.body,
+                "is_internal": c.is_internal,
+            }
+            for c in comments
+        ],
+        "links": [{"type": link.link_type, "to": link.to_key} for link in links],
+    }
+
+
+def phase_time_rows(engine: Engine, filters: Filters, phase: str | None = None) -> dict[str, Any]:
+    """Интервалы по фазам — исходные данные для графика распределения времени."""
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+    conditions.append("i.ended_at IS NOT NULL")
+    if phase:
+        conditions.append("CAST(i.phase AS text) = :phase")
+        params["phase"] = phase
+
+    query = f"""
+        SELECT t.external_key, ws.external_name AS status, CAST(i.phase AS text) AS phase,
+               p.display_name AS assignee, i.started_at, i.ended_at,
+               i.duration_business_s, i.duration_calendar_s, i.is_blocked
+        FROM ticket_interval i
+        JOIN ticket t ON t.id = i.ticket_id
+        JOIN workflow_status ws ON ws.id = i.status_id
+        LEFT JOIN person p ON p.id = i.assignee_id
+        {_where(conditions)}
+        ORDER BY i.duration_business_s DESC NULLS LAST
+        LIMIT 500
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    return {
+        "items": [
+            {
+                "key": r.external_key,
+                "status": r.status,
+                "phase": r.phase,
+                "assignee": r.assignee,
+                "started_at": r.started_at.isoformat(),
+                "ended_at": r.ended_at.isoformat() if r.ended_at else None,
+                "business_s": r.duration_business_s,
+                "calendar_s": r.duration_calendar_s,
+                "is_blocked": r.is_blocked,
+            }
+            for r in rows
+        ]
+    }

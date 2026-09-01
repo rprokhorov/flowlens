@@ -288,6 +288,55 @@ def post_explain(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
         return {"available": False, "text": None, "reason": str(exc)}
 
 
+@app.get("/api/tickets")
+def get_tickets(
+    engine: EngineDep,
+    filters: FiltersDep,
+    limit: Annotated[int, Query(le=500, description="Сколько записей вернуть")] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: Annotated[str, Query()] = "cycle_time",
+    order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    search: Annotated[str | None, Query(description="Поиск по ключу или названию")] = None,
+    only_open: Annotated[bool, Query()] = False,
+    min_cycle_s: Annotated[int | None, Query()] = None,
+    max_cycle_s: Annotated[int | None, Query()] = None,
+    anomaly: Annotated[str | None, Query(description="Код аномалии")] = None,
+) -> dict[str, Any]:
+    """Список задач с метриками — данные, из которых построены графики."""
+    return analytics.ticket_list(
+        engine,
+        filters,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+        order=order,
+        search=search,
+        only_open=only_open,
+        min_cycle_s=min_cycle_s,
+        max_cycle_s=max_cycle_s,
+        anomaly=anomaly,
+    )
+
+
+@app.get("/api/tickets/{key}")
+def get_ticket(engine: EngineDep, key: str) -> dict[str, Any]:
+    """Полная история задачи: события, интервалы, согласование дат."""
+    detail = analytics.ticket_detail(engine, key)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Задача {key} не найдена")
+    return detail
+
+
+@app.get("/api/phase-intervals")
+def get_phase_intervals(
+    engine: EngineDep,
+    filters: FiltersDep,
+    phase: Annotated[str | None, Query(description="Фильтр по фазе")] = None,
+) -> dict[str, Any]:
+    """Интервалы по фазам — исходные данные графика распределения времени."""
+    return analytics.phase_time_rows(engine, filters, phase)
+
+
 @app.get("/api/filters")
 def get_filter_options(engine: EngineDep) -> dict[str, Any]:
     """Доступные значения фильтров."""
