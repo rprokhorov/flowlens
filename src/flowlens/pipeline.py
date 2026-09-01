@@ -304,4 +304,71 @@ def _load_ticket_history(
     return events, comments
 
 
-__all__ = ["SeedResult", "recompute_all", "seed_demo"]
+__all__ = ["SeedResult", "build_narrative_request", "recompute_all", "seed_demo"]
+
+
+def build_narrative_request(engine: Engine, filters, period_label: str):
+    """Собрать метрики для текстового разбора."""
+    from flowlens import analytics
+    from flowlens.core.advice import analyse
+    from flowlens.core.forecast import (
+        ThroughputSample,
+        forecast_how_long,
+        forecast_how_many,
+        wip_health,
+    )
+    from flowlens.core.narrative import NarrativeRequest
+    from flowlens.core.quality import build_report
+    from flowlens.repository import load_quality_rows
+
+    stats = analytics.summary(engine, filters)
+    flow = analytics.flow_efficiency(engine, filters)
+    arrival = analytics.arrival_vs_throughput(engine, filters)
+    aging = analytics.aging_wip(engine, filters)
+    people = analytics.people_load(engine, filters)
+    report = build_report(load_quality_rows(engine))
+
+    history = analytics.throughput_history(engine, filters, periods=12)
+    backlog = analytics.open_backlog_size(engine, filters)
+    per_day = (sum(history) / len(history) / 7) if history else 0.0
+    cycle_days = (stats["p50_cycle_s"] / 3600 / 9) if stats["p50_cycle_s"] else 0.0
+    sample = ThroughputSample(values=history, period_days=7)
+
+    forecast_data = {
+        "how_long": {"percentiles": forecast_how_long(backlog, sample).percentiles},
+        "how_many": {"percentiles": forecast_how_many(4, sample).percentiles},
+        "wip_health": wip_health(analytics.average_wip(engine, filters), per_day, cycle_days),
+    }
+
+    quality_payload = {
+        "trustworthy_pct": report.trustworthy_pct,
+        "declared_coverage_pct": report.declared_coverage_pct,
+        "anomalies": [
+            {"code": g.code, "label": g.label, "count": g.count} for g in report.anomalies
+        ],
+    }
+
+    findings = analyse(
+        summary=stats,
+        flow=flow,
+        arrival=arrival,
+        aging=aging,
+        people=people,
+        forecast=forecast_data,
+        quality=quality_payload,
+    )
+
+    return NarrativeRequest(
+        period_label=period_label,
+        summary=stats,
+        flow=flow,
+        arrival=arrival,
+        aging=aging,
+        quality=quality_payload,
+        findings=[
+            {"title": f.title, "detail": f.detail, "severity": f.severity.value}
+            for f in findings
+        ],
+        forecast=forecast_data,
+        interventions=analytics.interventions(engine, filters),
+    )

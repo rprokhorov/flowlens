@@ -435,6 +435,39 @@ def forecast(
 
 
 @app.command()
+def explain(
+    days: Annotated[int, typer.Option(help="За сколько дней разбирать")] = 90,
+    model: Annotated[str | None, typer.Option(help="Модель Claude")] = None,
+) -> None:
+    """Текстовый разбор метрик.
+
+    Требует ANTHROPIC_API_KEY в окружении. Остальные отчёты работают без него.
+    """
+    from datetime import timedelta
+
+    from flowlens.analytics import Filters
+    from flowlens.core.narrative import MODEL, NarrativeUnavailable, generate
+    from flowlens.pipeline import build_narrative_request
+
+    engine = make_engine()
+    since = datetime.now().date() - timedelta(days=days)
+    filters = Filters(date_from=since)
+    label = f"последние {days} дней (с {since:%d.%m.%Y})"
+
+    typer.echo("Собираю метрики…")
+    request = build_narrative_request(engine, filters, label)
+
+    typer.echo("Запрашиваю разбор…\n")
+    try:
+        text = generate(request, model=model or MODEL)
+    except NarrativeUnavailable as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.echo(text)
+
+
+@app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Адрес")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Порт")] = 8000,

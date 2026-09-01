@@ -526,6 +526,37 @@ function fill(id, values) {
   }
 }
 
+// --- разбор -----------------------------------------------------------------
+
+async function requestExplanation() {
+  const button = document.getElementById('explain-btn');
+  const container = document.getElementById('explain');
+  button.disabled = true;
+  button.textContent = 'Готовлю разбор…';
+  container.innerHTML = '<div class="loading">модель анализирует метрики…</div>';
+
+  try {
+    const params = filterParams();
+    const response = await fetch(`/api/explain?${params}`, { method: 'POST' });
+    const data = await response.json();
+
+    if (!data.available) {
+      container.innerHTML =
+        `<div class="explain-unavailable">${escapeHtml(data.reason || 'Разбор недоступен.')}</div>`;
+    } else {
+      const paragraphs = data.text.split(/\n\n+/)
+        .map(p => `<p>${escapeHtml(p)}</p>`).join('');
+      container.innerHTML = `<div class="explain-text">${paragraphs}</div>`;
+    }
+  } catch (error) {
+    container.innerHTML =
+      `<div class="explain-unavailable">Не удалось получить разбор: ${escapeHtml(error.message)}</div>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Обновить разбор';
+  }
+}
+
 // --- события ----------------------------------------------------------------
 
 function setUnit(next) {
@@ -539,6 +570,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   for (const id of ['f-from', 'f-to', 'f-type', 'f-priority', 'f-component', 'f-confidence']) {
     document.getElementById(id).addEventListener('change', loadAll);
   }
+  document.getElementById('explain-btn').addEventListener('click', requestExplanation);
   document.getElementById('u-business').addEventListener('click', () => setUnit('business'));
   document.getElementById('u-calendar').addEventListener('click', () => setUnit('calendar'));
   document.getElementById('theme-toggle').addEventListener('click', () => {

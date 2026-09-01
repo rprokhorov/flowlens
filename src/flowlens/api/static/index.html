@@ -203,6 +203,14 @@ tbody tr:hover { background: var(--surface-2); }
 .finding-tickets .pill { color: var(--text-secondary); }
 .no-findings { color: var(--text-muted); padding: 8px 0; }
 
+#explain { margin-top: 4px; }
+.explain-text {
+  white-space: pre-wrap; line-height: 1.65;
+  max-width: 76ch; color: var(--text-primary);
+}
+.explain-text p { margin: 0 0 12px; }
+.explain-unavailable { color: var(--text-muted); font-size: 13px; }
+
 .forecast-grid {
   display: grid; gap: 18px;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -260,6 +268,16 @@ tbody tr:hover { background: var(--surface-2); }
 <main>
   <div class="tiles" id="tiles"></div>
   <div class="grid" id="grid">
+    <div class="card w12" id="explain-card">
+      <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <h2 style="margin:0">Разбор</h2>
+        <button id="explain-btn">Получить разбор</button>
+      </div>
+      <p class="hint">Связный текст по тем же метрикам, что показаны ниже.
+         Требует ключа Anthropic в окружении сервера.</p>
+      <div id="explain"></div>
+    </div>
+
     <div class="card w12" id="advice-card">
       <h2>На что стоит посмотреть</h2>
       <p class="hint">Наблюдения по фиксированным правилам — не оценка команды,

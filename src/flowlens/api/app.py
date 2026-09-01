@@ -259,6 +259,35 @@ def get_interventions(engine: EngineDep, filters: FiltersDep) -> list[dict[str, 
     return analytics.interventions(engine, filters)
 
 
+@app.post("/api/explain")
+def post_explain(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Текстовый разбор метрик. Требует ключа Anthropic в окружении."""
+    from flowlens.core.narrative import NarrativeUnavailable, generate, is_available
+    from flowlens.pipeline import build_narrative_request
+
+    if not is_available():
+        return {
+            "available": False,
+            "text": None,
+            "reason": (
+                "Разбор недоступен: не задан ANTHROPIC_API_KEY. "
+                "Остальные отчёты работают без него."
+            ),
+        }
+
+    label = "выбранный период"
+    if filters.date_from and filters.date_to:
+        label = f"{filters.date_from:%d.%m.%Y} — {filters.date_to:%d.%m.%Y}"
+    elif filters.date_from:
+        label = f"с {filters.date_from:%d.%m.%Y}"
+
+    request = build_narrative_request(engine, filters, label)
+    try:
+        return {"available": True, "text": generate(request), "reason": None}
+    except NarrativeUnavailable as exc:
+        return {"available": False, "text": None, "reason": str(exc)}
+
+
 @app.get("/api/filters")
 def get_filter_options(engine: EngineDep) -> dict[str, Any]:
     """Доступные значения фильтров."""
