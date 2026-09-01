@@ -271,6 +271,31 @@ def test_load_imbalance_needs_enough_people() -> None:
     assert "load_imbalance" not in codes(analyse(**data))
 
 
+# --- застоявшаяся работа -----------------------------------------------------
+
+
+def test_stalled_work_detected() -> None:
+    """Разрыв между объёмом работы и темпом означает, что задачи стоят."""
+    findings = analyse(**inputs(), forecast={
+        "wip_health": {"ratio": 12.0, "measured_days": 2.5, "implied_days": 30.0}
+    })
+    finding = next(f for f in findings if f.code == "stalled_work")
+    assert finding.severity == Severity.WATCH
+    assert "12" in finding.title
+
+
+def test_stalled_work_silent_when_balanced() -> None:
+    findings = analyse(**inputs(), forecast={
+        "wip_health": {"ratio": 1.2, "measured_days": 2.5, "implied_days": 3.0}
+    })
+    assert "stalled_work" not in codes(findings)
+
+
+def test_stalled_work_without_forecast() -> None:
+    """Отсутствие прогноза не ломает остальные правила."""
+    assert "stalled_work" not in codes(analyse(**inputs()))
+
+
 # --- общее поведение ---------------------------------------------------------
 
 

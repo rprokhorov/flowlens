@@ -190,9 +190,35 @@ def test_advice_sorted_by_severity(client) -> None:
     assert ranks == sorted(ranks)
 
 
+def test_forecast_endpoint(client) -> None:
+    """Прогноз возвращает перцентили в правильном направлении."""
+    data = client.get("/api/forecast").json()
+    assert "how_long" in data and "how_many" in data
+
+    long_p = data["how_long"]["percentiles"]
+    if long_p:
+        # выше уверенность — больше срок
+        assert int(long_p["50"]) <= int(long_p["85"]) <= int(long_p["95"])
+
+    many_p = data["how_many"]["percentiles"]
+    if many_p:
+        # выше уверенность — меньше обещанный объём
+        assert int(many_p["50"]) >= int(many_p["85"]) >= int(many_p["95"])
+
+
+def test_forecast_horizon_parameter(client) -> None:
+    short = client.get("/api/forecast?horizon_periods=2").json()
+    long = client.get("/api/forecast?horizon_periods=8").json()
+    if short["how_many"]["percentiles"] and long["how_many"]["percentiles"]:
+        assert int(long["how_many"]["percentiles"]["50"]) > int(
+            short["how_many"]["percentiles"]["50"]
+        )
+
+
 def test_all_endpoints_return_200(client) -> None:
     endpoints = [
         "/api/advice",
+        "/api/forecast",
         "/api/summary",
         "/api/cycle-time",
         "/api/cfd",

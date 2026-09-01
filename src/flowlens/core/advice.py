@@ -60,6 +60,7 @@ def analyse(
     aging: dict[str, Any],
     people: dict[str, Any],
     quality: dict[str, Any],
+    forecast: dict[str, Any] | None = None,
     thresholds: Thresholds | None = None,
 ) -> list[Finding]:
     """Прогнать все правила и вернуть наблюдения по убыванию срочности."""
@@ -77,6 +78,7 @@ def analyse(
         _rule_slowest_phase,
         _rule_load_imbalance,
         _rule_handoffs,
+        _rule_stalled_work,
     ):
         finding = rule(
             summary=summary,
@@ -85,6 +87,7 @@ def analyse(
             aging=aging,
             people=people,
             quality=quality,
+            forecast=forecast or {},
             t=t,
         )
         if finding is not None:
@@ -402,6 +405,35 @@ def _rule_handoffs(*, summary, aging, t, **_) -> Finding | None:
         suggestion="Разблокировка обычно даёт быстрый эффект: работа уже начата.",
         evidence={"count": len(blocked_items)},
         ticket_keys=[item["key"] for item in blocked_items[:5]],
+    )
+
+
+def _rule_stalled_work(*, forecast, **_) -> Finding | None:
+    """Незавершённой работы намного больше, чем следует из темпа.
+
+    Если из объёма работы следует срок в разы больший измеренного времени
+    цикла, значит задачи числятся в работе, но не движутся.
+    """
+    health = forecast.get("wip_health") or {}
+    ratio = health.get("ratio")
+    if not ratio or ratio < 3:
+        return None
+
+    return Finding(
+        code="stalled_work",
+        severity=Severity.WATCH,
+        title=f"Объём работы в {ratio:.0f} раз превышает пропускную способность",
+        detail=(
+            f"Измеренное время цикла — {health.get('measured_days')} дн, "
+            f"но из объёма незавершённых задач следует {health.get('implied_days')} дн. "
+            "Разрыв означает, что значительная часть задач не движется."
+        ),
+        suggestion=(
+            "Стоит разделить задачи, которые действительно в работе, и те, "
+            "что фактически лежат в очереди: смешивая их, невозможно оценить "
+            "ни загрузку, ни сроки."
+        ),
+        evidence={"ratio": ratio},
     )
 
 

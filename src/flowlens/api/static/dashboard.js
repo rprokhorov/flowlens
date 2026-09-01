@@ -408,11 +408,77 @@ function renderAdvice(data) {
     </div>`).join('');
 }
 
+// --- прогноз ----------------------------------------------------------------
+
+function renderForecast(data) {
+  const container = document.getElementById('forecast');
+  const long = data.how_long;
+  const many = data.how_many;
+
+  if (!long.percentiles || !Object.keys(long.percentiles).length) {
+    container.innerHTML =
+      `<div class="forecast-warning">${escapeHtml(long.warning || 'Недостаточно истории для прогноза.')}</div>`;
+    return;
+  }
+
+  const levels = [50, 70, 85, 95];
+  const longRows = levels.map(level => `
+    <div class="forecast-row">
+      <span class="forecast-prob">${level}%</span>
+      <span class="forecast-value">${long.percentiles[level]} нед</span>
+      <span class="forecast-when">${escapeHtml(long.dates[level] || '')}</span>
+    </div>`).join('');
+
+  const manyRows = levels.map(level => `
+    <div class="forecast-row">
+      <span class="forecast-prob">${level}%</span>
+      <span class="forecast-value">${many.percentiles[level]}</span>
+      <span class="forecast-when">задач и более</span>
+    </div>`).join('');
+
+  const health = data.wip_health || {};
+  const season = data.seasonality || {};
+
+  container.innerHTML = `
+    <div class="forecast-grid">
+      <div class="forecast-block">
+        <h3>Когда закроем текущий объём (${data.backlog} задач)</h3>
+        ${longRows}
+        ${long.warning ? `<div class="forecast-warning">${escapeHtml(long.warning)}</div>` : ''}
+      </div>
+      <div class="forecast-block">
+        <h3>Сколько успеем за ${many.periods} нед</h3>
+        ${manyRows}
+      </div>
+      <div class="forecast-block">
+        <h3>Незавершённая работа</h3>
+        ${health.verdict ? `
+          <div class="forecast-row">
+            <span class="forecast-value">${health.measured_days} дн</span>
+            <span class="forecast-when">измеренное время цикла</span>
+          </div>
+          <div class="forecast-row">
+            <span class="forecast-value">${health.implied_days} дн</span>
+            <span class="forecast-when">следует из объёма работы</span>
+          </div>
+          <div class="forecast-note">${escapeHtml(health.verdict)}</div>
+        ` : '<div class="forecast-note">Недостаточно данных.</div>'}
+        ${season.busiest ? `
+          <div class="forecast-note">
+            Больше всего задач приходит в ${escapeHtml(season.busiest)},
+            меньше всего — в ${escapeHtml(season.quietest)}${
+              season.ratio ? ` (разница в ${season.ratio} раза)` : ''}.
+          </div>` : ''}
+      </div>
+    </div>`;
+}
+
 // --- загрузка ---------------------------------------------------------------
 
 async function loadAll() {
   try {
-    const [summary, quality, cfd, cycle, arrival, phases, people, aging, advice] =
+    const [summary, quality, cfd, cycle, arrival, phases, people, aging, advice,
+           forecast] =
       await Promise.all([
         fetchJson('/api/summary'),
         fetch('/api/quality').then(r => r.json()),
@@ -423,8 +489,10 @@ async function loadAll() {
         fetchJson('/api/people'),
         fetchJson('/api/aging-wip'),
         fetchJson('/api/advice'),
+        fetchJson('/api/forecast', { horizon_periods: 4 }),
       ]);
     renderAdvice(advice);
+    renderForecast(forecast);
     renderTiles(summary, quality);
     renderQuality(quality);
     renderCfd(cfd);

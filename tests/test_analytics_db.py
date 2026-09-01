@@ -11,12 +11,16 @@ from flowlens.analytics import (
     Filters,
     aging_wip,
     arrival_vs_throughput,
+    arrivals_by_weekday,
+    average_wip,
     cumulative_flow,
     cycle_time_distribution,
     flow_efficiency,
     interventions,
+    open_backlog_size,
     people_load,
     summary,
+    throughput_history,
 )
 from flowlens.db import make_engine
 from flowlens.pipeline import recompute_all, seed_demo
@@ -306,3 +310,35 @@ def test_intervention_roundtrip(data) -> None:
 
     with data.begin() as conn:
         conn.execute(text("DELETE FROM intervention"))
+
+
+# --- данные для прогноза -----------------------------------------------------
+
+
+def test_throughput_history_excludes_current_period(data) -> None:
+    """Текущий период неполон и занизил бы прогноз."""
+    values = throughput_history(data, Filters(), periods=8)
+    assert values
+    assert all(isinstance(v, int) for v in values)
+
+
+def test_throughput_history_respects_limit(data) -> None:
+    assert len(throughput_history(data, Filters(), periods=4)) <= 4
+
+
+def test_backlog_size_matches_summary(data) -> None:
+    assert open_backlog_size(data, Filters()) == summary(data, Filters())["open_tickets"]
+
+
+def test_average_wip_positive(data) -> None:
+    assert average_wip(data, Filters()) > 0
+
+
+def test_arrivals_by_weekday_excludes_weekends(data) -> None:
+    """Задачи создаются в рабочие дни: генератор не работает по выходным."""
+    arrivals = arrivals_by_weekday(data, Filters())
+    assert arrivals
+    assert all(0 <= weekday <= 6 for weekday in arrivals)
+    workday_total = sum(sum(v) for w, v in arrivals.items() if w < 5)
+    weekend_total = sum(sum(v) for w, v in arrivals.items() if w >= 5)
+    assert workday_total > weekend_total

@@ -529,6 +529,89 @@ def summary(engine: Engine, filters: Filters) -> dict[str, Any]:
     }
 
 
+def throughput_history(
+    engine: Engine, filters: Filters, granularity: str = "week", periods: int = 12
+) -> list[int]:
+    """Сколько задач закрывалось за каждый из последних периодов.
+
+    Последний период исключается: он почти всегда неполный и занизил бы прогноз.
+    """
+    params: dict[str, Any] = {"granularity": granularity}
+    conditions = _ticket_conditions(filters, params)
+    conditions.append("ws.is_terminal")
+
+    query = f"""
+        SELECT CAST(date_trunc(:granularity, ti.started_at) AS date) AS period,
+               count(DISTINCT ti.ticket_id) AS count
+        FROM ticket_interval ti
+        JOIN workflow_status ws ON ws.id = ti.status_id
+        JOIN ticket t ON t.id = ti.ticket_id
+        {_where(conditions)}
+        GROUP BY period ORDER BY period DESC
+        LIMIT :limit
+    """
+    params["limit"] = periods + 1
+
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    if not rows:
+        return []
+    # rows отсортированы от новых к старым; отбрасываем текущий неполный период
+    values = [r.count for r in rows][1:]
+    return list(reversed(values))
+
+
+def open_backlog_size(engine: Engine, filters: Filters) -> int:
+    """Сколько задач сейчас не завершено."""
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+    conditions.append("t.closed_at IS NULL")
+    query = f"SELECT count(*) FROM ticket t {_where(conditions)}"
+    with engine.begin() as conn:
+        return conn.execute(text(query), params).scalar_one()
+
+
+def arrivals_by_weekday(engine: Engine, filters: Filters) -> dict[int, list[int]]:
+    """Поступление задач по дням недели — для анализа неравномерности."""
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+
+    query = f"""
+        SELECT CAST(EXTRACT(ISODOW FROM t.created_at) AS int) - 1 AS weekday,
+               CAST(t.created_at AS date) AS day,
+               count(*) AS count
+        FROM ticket t
+        {_where(conditions)}
+        GROUP BY weekday, day
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    out: dict[int, list[int]] = {}
+    for row in rows:
+        out.setdefault(row.weekday, []).append(row.count)
+    return out
+
+
+def average_wip(engine: Engine, filters: Filters, days: int = 30) -> float:
+    """Среднее число незавершённых задач за последние дни."""
+    params: dict[str, Any] = {"days": days}
+    conditions = _ticket_conditions(filters, params)
+    conditions.append("ti.ended_at IS NULL")
+    conditions.append("NOT ws.is_terminal")
+
+    query = f"""
+        SELECT count(DISTINCT ti.ticket_id) AS wip
+        FROM ticket_interval ti
+        JOIN workflow_status ws ON ws.id = ti.status_id
+        JOIN ticket t ON t.id = ti.ticket_id
+        {_where(conditions)}
+    """
+    with engine.begin() as conn:
+        return float(conn.execute(text(query), params).scalar_one() or 0)
+
+
 def interventions(engine: Engine, filters: Filters) -> list[dict[str, Any]]:
     """Отметки о значимых изменениях — накладываются на графики."""
     params: dict[str, Any] = {}
@@ -564,11 +647,15 @@ def interventions(engine: Engine, filters: Filters) -> list[dict[str, Any]]:
 __all__ = [
     "Filters",
     "aging_wip",
+    "arrivals_by_weekday",
+    "average_wip",
     "arrival_vs_throughput",
     "cumulative_flow",
     "cycle_time_distribution",
     "flow_efficiency",
     "interventions",
+    "open_backlog_size",
     "people_load",
     "summary",
+    "throughput_history",
 ]

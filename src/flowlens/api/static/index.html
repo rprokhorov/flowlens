@@ -202,6 +202,31 @@ tbody tr:hover { background: var(--surface-2); }
 .finding-tickets { margin-top: 6px; display: flex; gap: 5px; flex-wrap: wrap; }
 .finding-tickets .pill { color: var(--text-secondary); }
 .no-findings { color: var(--text-muted); padding: 8px 0; }
+
+.forecast-grid {
+  display: grid; gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.forecast-block h3 {
+  margin: 0 0 8px; font-size: 13px; font-weight: 600;
+  color: var(--text-secondary);
+}
+.forecast-row {
+  display: flex; align-items: baseline; gap: 10px; padding: 4px 0;
+}
+.forecast-prob {
+  color: var(--text-muted); font-size: 12px;
+  min-width: 42px; font-variant-numeric: tabular-nums;
+}
+.forecast-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.forecast-when { color: var(--text-secondary); font-size: 12px; }
+.forecast-note {
+  color: var(--text-muted); font-size: 12px; margin-top: 10px;
+  padding-left: 12px; border-left: 2px solid var(--border);
+}
+.forecast-warning {
+  color: var(--status-warning); font-size: 13px; padding: 8px 0;
+}
 .error {
   color: var(--status-critical); padding: 14px;
   border: 1px solid var(--status-critical); border-radius: 8px;
@@ -261,6 +286,14 @@ tbody tr:hover { background: var(--surface-2); }
       <h2>Поступление и закрытие</h2>
       <p class="hint">Если приходит больше, чем закрывается, очередь растёт.</p>
       <div class="chart" id="chart-arrival"></div>
+    </div>
+
+    <div class="card w12" id="forecast-card">
+      <h2>Прогноз</h2>
+      <p class="hint">Построен на историческом темпе закрытия, а не на оценках
+         трудоёмкости. Вероятность — не осторожность, а честный разброс:
+         одна дата всегда скрывает неопределённость.</p>
+      <div id="forecast"><div class="loading">загрузка…</div></div>
     </div>
 
     <div class="card w6">

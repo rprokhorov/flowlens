@@ -157,12 +157,24 @@ def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     quality_rows = load_quality_rows(engine)
     report = build_report(quality_rows)
 
+    from flowlens.core.forecast import wip_health
+
+    stats = analytics.summary(engine, filters)
+    history = analytics.throughput_history(engine, filters, periods=12)
+    per_day = (sum(history) / len(history) / 7) if history else 0.0
+    cycle_days = (stats["p50_cycle_s"] / 3600 / 9) if stats["p50_cycle_s"] else 0.0
+
     findings = analyse(
-        summary=analytics.summary(engine, filters),
+        summary=stats,
         flow=analytics.flow_efficiency(engine, filters),
         arrival=analytics.arrival_vs_throughput(engine, filters),
         aging=analytics.aging_wip(engine, filters),
         people=analytics.people_load(engine, filters),
+        forecast={
+            "wip_health": wip_health(
+                analytics.average_wip(engine, filters), per_day, cycle_days
+            )
+        },
         quality={
             "trustworthy_pct": report.trustworthy_pct,
             "anomalies": [
@@ -184,6 +196,60 @@ def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
             }
             for f in findings
         ]
+    }
+
+
+@app.get("/api/forecast")
+def get_forecast(
+    engine: EngineDep,
+    filters: FiltersDep,
+    horizon_periods: Annotated[int, Query(description="Горизонт в неделях")] = 4,
+) -> dict[str, Any]:
+    """Вероятностный прогноз по историческому темпу закрытия."""
+    from datetime import date as date_type
+
+    from flowlens.core.forecast import (
+        ThroughputSample,
+        analyse_seasonality,
+        forecast_how_long,
+        forecast_how_many,
+        wip_health,
+    )
+
+    history = analytics.throughput_history(engine, filters, periods=12)
+    backlog = analytics.open_backlog_size(engine, filters)
+    sample = ThroughputSample(values=history, period_days=7)
+
+    how_long = forecast_how_long(backlog, sample, start=date_type.today(), seed=None)
+    how_many = forecast_how_many(horizon_periods, sample, seed=None)
+
+    stats = analytics.summary(engine, filters)
+    wip = analytics.average_wip(engine, filters)
+    per_day = (sum(history) / len(history) / 7) if history else 0.0
+    cycle_days = (stats["p50_cycle_s"] / 3600 / 9) if stats["p50_cycle_s"] else 0.0
+
+    seasonality = analyse_seasonality(analytics.arrivals_by_weekday(engine, filters))
+
+    return {
+        "throughput_history": history,
+        "backlog": backlog,
+        "how_long": {
+            "percentiles": how_long.percentiles,
+            "dates": how_long.dates,
+            "warning": how_long.warning,
+        },
+        "how_many": {
+            "periods": horizon_periods,
+            "percentiles": how_many.percentiles,
+            "warning": how_many.warning,
+        },
+        "wip_health": wip_health(wip, per_day, cycle_days),
+        "seasonality": {
+            "busiest": seasonality.busiest_name(),
+            "quietest": seasonality.quietest_name(),
+            "ratio": seasonality.ratio,
+            "by_weekday": seasonality.by_weekday,
+        },
     }
 
 

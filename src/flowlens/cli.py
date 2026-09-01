@@ -329,13 +329,25 @@ def advice(
     engine = make_engine()
     filters = Filters(date_from=(datetime.now().date() - timedelta(days=days)))
 
+    from flowlens.core.forecast import wip_health
+
+    stats = analytics.summary(engine, filters)
+    history = analytics.throughput_history(engine, filters, periods=12)
+    per_day = (sum(history) / len(history) / 7) if history else 0.0
+    cycle_days = (stats["p50_cycle_s"] / 3600 / 9) if stats["p50_cycle_s"] else 0.0
+
     report = build_report(load_quality_rows(engine))
     findings = analyse(
-        summary=analytics.summary(engine, filters),
+        summary=stats,
         flow=analytics.flow_efficiency(engine, filters),
         arrival=analytics.arrival_vs_throughput(engine, filters),
         aging=analytics.aging_wip(engine, filters),
         people=analytics.people_load(engine, filters),
+        forecast={
+            "wip_health": wip_health(
+                analytics.average_wip(engine, filters), per_day, cycle_days
+            )
+        },
         quality={
             "trustworthy_pct": report.trustworthy_pct,
             "anomalies": [
@@ -358,6 +370,68 @@ def advice(
         if finding.ticket_keys:
             typer.echo(f"     задачи: {', '.join(finding.ticket_keys)}")
         typer.echo("")
+
+
+@app.command()
+def forecast(
+    weeks: Annotated[int, typer.Option(help="Горизонт прогноза в неделях")] = 4,
+    history: Annotated[int, typer.Option(help="Сколько недель истории брать")] = 12,
+) -> None:
+    """Вероятностный прогноз по историческому темпу."""
+    from datetime import date as date_type
+
+    from flowlens import analytics
+    from flowlens.analytics import Filters
+    from flowlens.core.forecast import (
+        ThroughputSample,
+        forecast_how_long,
+        forecast_how_many,
+        wip_health,
+    )
+
+    engine = make_engine()
+    filters = Filters()
+    values = analytics.throughput_history(engine, filters, periods=history)
+    backlog = analytics.open_backlog_size(engine, filters)
+    sample = ThroughputSample(values=values, period_days=7)
+
+    typer.echo(f"Темп закрытия по неделям: {values}")
+    typer.echo(f"Незавершённых задач: {backlog}\n")
+
+    how_long = forecast_how_long(backlog, sample, start=date_type.today())
+    if how_long.warning:
+        typer.echo(f"! {how_long.warning}\n")
+    if how_long.percentiles:
+        typer.echo("Когда закончим текущий объём:")
+        for level in (50, 70, 85, 95):
+            periods = how_long.percentiles.get(level)
+            when = how_long.dates.get(level, "")
+            typer.echo(f"  с вероятностью {level}%: {periods:3} нед  {when}")
+        typer.echo("")
+
+    how_many = forecast_how_many(weeks, sample)
+    if how_many.percentiles:
+        typer.echo(f"Сколько закроем за {weeks} нед:")
+        for level in (50, 70, 85, 95):
+            typer.echo(
+                f"  с вероятностью {level}%: не менее {how_many.percentiles[level]:4} задач"
+            )
+        typer.echo("")
+
+    stats = analytics.summary(engine, filters)
+    wip = analytics.average_wip(engine, filters)
+    per_day = (sum(values) / len(values) / 7) if values else 0.0
+    cycle_days = (stats["p50_cycle_s"] / 3600 / 9) if stats["p50_cycle_s"] else 0.0
+    health = wip_health(wip, per_day, cycle_days)
+    if health.get("verdict"):
+        typer.echo(
+            f"Незавершённая работа: {wip:.0f} задач при темпе {per_day:.1f} в день."
+        )
+        typer.echo(
+            f"  измеренное время цикла: {health['measured_days']} дн, "
+            f"следует из объёма: {health['implied_days']} дн"
+        )
+        typer.echo(f"  {health['verdict']}")
 
 
 @app.command()
