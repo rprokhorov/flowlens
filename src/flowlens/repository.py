@@ -192,7 +192,7 @@ def insert_ticket(
                     "  source_event_id, payload) "
                     "VALUES (:tid, CAST(:kind AS event_type), :at, :actor, :field, :old, :new, "
                     "        :old_st, :new_st, :sid, '{}') "
-                    "ON CONFLICT (ticket_id, source_event_id, field) DO NOTHING"
+                    "ON CONFLICT (ticket_id, source_event_id, COALESCE(field, '')) DO NOTHING"
                 ),
                 {
                     "tid": ticket_id,

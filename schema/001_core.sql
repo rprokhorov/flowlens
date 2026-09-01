@@ -191,9 +191,13 @@ CREATE TABLE ticket_event (
     old_status_id   bigint      REFERENCES workflow_status(id),
     new_status_id   bigint      REFERENCES workflow_status(id),
     source_event_id text,                     -- id записи changelog, для идемпотентности
-    payload         jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    UNIQUE (ticket_id, source_event_id, field)
+    payload         jsonb       NOT NULL DEFAULT '{}'::jsonb
 );
+
+-- COALESCE, потому что NULL != NULL: события без поля (created, comment)
+-- иначе дублировались бы при повторном импорте
+CREATE UNIQUE INDEX ticket_event_natural_key_idx
+    ON ticket_event (ticket_id, source_event_id, COALESCE(field, ''));
 
 CREATE INDEX ticket_event_ticket_time_idx ON ticket_event (ticket_id, occurred_at);
 CREATE INDEX ticket_event_time_idx        ON ticket_event (occurred_at);

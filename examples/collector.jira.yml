@@ -1,0 +1,66 @@
+# Пример конфигурации коллектора Jira Data Center.
+# Скопируйте, поправьте под свою инсталляцию и запустите:
+#   flowlens sync --config examples/collector.jira.yml
+
+source_name: prod-jira
+
+# JQL, определяющий, какие тикеты собирать.
+# Глубину истории задавайте здесь: за год выгрузка идёт заметно быстрее.
+jql: project = PROJ AND created >= -365d
+
+jira:
+  base_url: https://jira.example.com
+
+  # Секреты берутся ТОЛЬКО из окружения, в файл их писать нельзя.
+  # Для Data Center предпочтителен Personal Access Token:
+  #   export JIRA_TOKEN=...
+  token_env: JIRA_TOKEN
+
+  # Запасной вариант — базовая авторизация:
+  # username_env: JIRA_USER
+  # password_env: JIRA_PASSWORD
+
+  page_size: 100
+  timeout_s: 30
+  max_retries: 5
+
+  # Пауза между запросами, если сервер ограничивает частоту.
+  min_interval_s: 0
+
+  verify_ssl: true
+
+# Соответствие полей Jira смыслам FlowLens.
+# Имена customfield различаются между инсталляциями — найдите свои через
+# GET /rest/api/2/field или в интерфейсе администратора.
+mapping:
+  # Даты, которые сотрудники проставляют вручную.
+  # Ядро сохраняет их СЫРЫМИ рядом с changelog и разрешает противоречия
+  # на этапе согласования — коллектор ничего не «чинит».
+  work_start: customfield_10014
+  work_end: customfield_10015
+
+  story_points: customfield_10016
+  epic_link: customfield_10017
+
+  # 'day' — если поле хранит только дату; 'minute' — если дату со временем.
+  declared_precision: minute
+
+  # Дополнительные поля, попадающие в raw_fields.
+  extra_fields:
+    team: customfield_10020
+    customer: customfield_10021
+
+# Приведение статусов доски к каноническим фазам FlowLens.
+# Слева — как называется в Jira, справа — канонический статус:
+#   new | in progress | blocked/hold | qa | release | done
+status_mapping:
+  "Открыт": new
+  "В работе": in progress
+  "Заблокирован": blocked/hold
+  "На проверке": qa
+  "Готов к релизу": release
+  "Закрыт": done
+
+# Комментарии нужны для метрики времени первого ответа,
+# но заметно замедляют выгрузку (отдельный запрос на тикет).
+fetch_comments: true
