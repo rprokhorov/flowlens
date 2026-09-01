@@ -1,0 +1,2 @@
+[console_scripts]
+flowlens = flowlens.cli:app

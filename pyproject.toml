@@ -1,0 +1,42 @@
+[project]
+name = "flowlens"
+version = "0.1.0"
+description = "Flow analytics for Kanban ticket streams"
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "alembic",
+    "psycopg[binary]",
+    "pydantic>=2",
+    "typer",
+    "python-dateutil",
+]
+
+[project.scripts]
+flowlens = "flowlens.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# env.py генерируется alembic: импорты обязаны идти после настройки sys.path
+extend-exclude = ["migrations/env.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/flowlens/core"]

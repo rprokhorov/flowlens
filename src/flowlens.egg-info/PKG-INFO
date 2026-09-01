@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: flowlens
+Version: 0.1.0
+Summary: Flow analytics for Kanban ticket streams
+Requires-Python: >=3.12
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: alembic
+Requires-Dist: psycopg[binary]
+Requires-Dist: pydantic>=2
+Requires-Dist: typer
+Requires-Dist: python-dateutil
