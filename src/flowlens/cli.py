@@ -227,5 +227,92 @@ def sync_command(
     typer.echo(f"Пересчитано: {result['tickets']} тикетов, {result['intervals']} интервалов")
 
 
+@app.command("quality")
+def quality_command(
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Показать примеры задач")
+    ] = False,
+) -> None:
+    """Отчёт о качестве данных.
+
+    Показывает, какой доле метрик можно доверять и что мешает доверять остальным.
+    """
+    from flowlens.core.quality import build_report
+    from flowlens.repository import load_quality_rows
+
+    engine = make_engine()
+    rows = load_quality_rows(engine)
+    if not rows:
+        typer.echo("Нет данных. Сначала выполните import или seed-demo.", err=True)
+        raise typer.Exit(1)
+
+    report = build_report(rows)
+
+    typer.echo(f"Всего задач:              {report.total_tickets}")
+    typer.echo(f"С заявленными датами:     {report.declared_coverage_pct}%")
+    typer.echo(f"Надёжных метрик:          {report.trustworthy_pct}%")
+    typer.echo("")
+
+    typer.echo("Достоверность:")
+    for level in ("high", "medium", "low"):
+        count = report.by_confidence.get(level, 0)
+        if count:
+            share = 100 * count / report.total_tickets
+            typer.echo(f"  {level:8} {count:6}  ({share:.1f}%)")
+
+    typer.echo("")
+    typer.echo("Источник итогового значения:")
+    for source, count in sorted(report.by_source.items(), key=lambda kv: -kv[1]):
+        typer.echo(f"  {source:10} {count:6}")
+
+    if report.anomalies:
+        typer.echo("")
+        typer.echo("Проблемы:")
+        for group in report.anomalies:
+            typer.echo(f"  {group.count:5}  {group.label}")
+            if verbose:
+                typer.echo(f"         {group.hint}")
+                if group.sample_keys:
+                    typer.echo(f"         например: {', '.join(group.sample_keys)}")
+
+    typer.echo("")
+    typer.echo(report.verdict())
+
+
+@app.command("recompute-policy")
+def recompute_policy_command(
+    prefer: Annotated[
+        str, typer.Option(help="Что предпочитать: declared | system | system_only")
+    ] = "declared",
+    threshold_days: Annotated[
+        float, typer.Option(help="Порог расхождения в рабочих днях")
+    ] = 3.0,
+    on_conflict: Annotated[
+        str,
+        typer.Option(help="При конфликте: use_declared_flag_anomaly | use_system_flag_anomaly"),
+    ] = "use_declared_flag_anomaly",
+    version: Annotated[str, typer.Option(help="Метка версии политики")] = "custom",
+) -> None:
+    """Пересчитать метрики с другой политикой согласования.
+
+    Обращения к источнику не требуется: всё строится заново из event log.
+    """
+    from flowlens.core.reconciliation import ReconciliationPolicy
+
+    policy = ReconciliationPolicy(
+        version=version,
+        prefer=prefer,
+        discrepancy_threshold_business_days=threshold_days,
+        on_conflict=on_conflict,
+    )
+    engine = make_engine()
+    started = time.monotonic()
+    result = recompute_all(engine, policy=policy)
+    typer.echo(
+        f"Пересчитано по политике '{version}': {result['tickets']} задач, "
+        f"с аномалиями {result['anomalous']}, за {time.monotonic() - started:.1f} с"
+    )
+
+
 if __name__ == "__main__":
     app()

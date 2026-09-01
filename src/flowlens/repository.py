@@ -381,6 +381,78 @@ def save_workload(
             )
 
 
+def save_timeline_facts(engine: Engine, ticket_id: int, facts) -> None:
+    """Записать результат согласования по обеим границам."""
+    with engine.begin() as conn:
+        for fact in facts:
+            conn.execute(
+                text(
+                    "INSERT INTO ticket_timeline_fact (ticket_id, boundary, system_at, "
+                    "  declared_at, effective_at, chosen_source, confidence, "
+                    "  discrepancy_business_s, anomaly_flags, policy_version, computed_at) "
+                    "VALUES (:tid, :boundary, :system, :declared, :effective, :source, "
+                    "        :confidence, :discrepancy, :flags, :version, now()) "
+                    "ON CONFLICT (ticket_id, boundary) DO UPDATE SET "
+                    "  system_at = EXCLUDED.system_at, declared_at = EXCLUDED.declared_at, "
+                    "  effective_at = EXCLUDED.effective_at, "
+                    "  chosen_source = EXCLUDED.chosen_source, "
+                    "  confidence = EXCLUDED.confidence, "
+                    "  discrepancy_business_s = EXCLUDED.discrepancy_business_s, "
+                    "  anomaly_flags = EXCLUDED.anomaly_flags, "
+                    "  policy_version = EXCLUDED.policy_version, computed_at = now()"
+                ),
+                {
+                    "tid": ticket_id,
+                    "boundary": fact.boundary,
+                    "system": fact.system_at,
+                    "declared": fact.declared_at,
+                    "effective": fact.effective_at,
+                    "source": fact.source.value,
+                    "confidence": fact.confidence.value,
+                    "discrepancy": fact.discrepancy_business_s,
+                    "flags": sorted(a.value for a in fact.anomalies),
+                    "version": fact.policy_version,
+                },
+            )
+
+
+def save_metrics_confidence(engine: Engine, ticket_id: int, confidence: str) -> None:
+    """Проставить достоверность метрик тикета."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE ticket_metrics SET confidence = :c WHERE ticket_id = :tid"),
+            {"c": confidence, "tid": ticket_id},
+        )
+
+
+def load_declared_dates(engine: Engine, ticket_id: int) -> dict[str, tuple[datetime, str]]:
+    """Прочитать заявленные даты тикета."""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT boundary, value_at, precision FROM ticket_declared_date "
+                "WHERE ticket_id = :tid"
+            ),
+            {"tid": ticket_id},
+        ).all()
+    return {boundary: (value, precision) for boundary, value, precision in rows}
+
+
+def load_quality_rows(engine: Engine) -> list[dict]:
+    """Данные для отчёта о качестве."""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT t.external_key AS key, f.confidence, f.chosen_source AS source, "
+                "       f.anomaly_flags AS anomalies, "
+                "       EXISTS (SELECT 1 FROM ticket_declared_date d "
+                "               WHERE d.ticket_id = t.id) AS has_declared "
+                "FROM ticket_timeline_fact f JOIN ticket t ON t.id = f.ticket_id"
+            )
+        ).all()
+    return [dict(r._mapping) for r in rows]
+
+
 def load_calendar(engine: Engine, team_id: int) -> WorkCalendar:
     """Прочитать календарь команды."""
     with engine.begin() as conn:

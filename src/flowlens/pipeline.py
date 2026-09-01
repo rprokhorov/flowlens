@@ -13,14 +13,22 @@ from flowlens.core.calendar import WorkCalendar
 from flowlens.core.domain import Comment, Event, EventKind, TicketSeed
 from flowlens.core.intervals import build_intervals
 from flowlens.core.metrics import compute_metrics
+from flowlens.core.reconciliation import (
+    ReconciliationPolicy,
+    TimelineSignals,
+    reconcile,
+)
 from flowlens.core.workload import DailyLoad, accumulate_workload
 from flowlens.repository import (
     ensure_reference_data,
     insert_ticket,
     load_calendar,
+    load_declared_dates,
     reset_data,
     save_intervals,
     save_metrics,
+    save_metrics_confidence,
+    save_timeline_facts,
     save_workload,
     upsert_people,
 )
@@ -113,9 +121,19 @@ def _random_workday_moment(
     return cal.add_business_seconds(start, 0)
 
 
-def recompute_all(engine: Engine, *, now: datetime | None = None) -> dict[str, int]:
-    """Пересчитать интервалы, метрики и нагрузку для всех тикетов."""
+def recompute_all(
+    engine: Engine,
+    *,
+    now: datetime | None = None,
+    policy: ReconciliationPolicy | None = None,
+) -> dict[str, int]:
+    """Пересчитать интервалы, согласование, метрики и нагрузку.
+
+    Всё производное строится заново из event log, поэтому смена политики
+    согласования или календаря не требует обращения к источнику.
+    """
     moment = now or datetime.now(MSK)
+    active_policy = policy or ReconciliationPolicy()
 
     with engine.begin() as conn:
         rows = conn.execute(
@@ -141,6 +159,7 @@ def recompute_all(engine: Engine, *, now: datetime | None = None) -> dict[str, i
     refs["team_id"] = team_id
 
     total_intervals = 0
+    anomalous = 0
     workload: dict[tuple[str, object], DailyLoad] = {}
 
     for row in rows:
@@ -160,10 +179,56 @@ def recompute_all(engine: Engine, *, now: datetime | None = None) -> dict[str, i
             reporter=(row.display_name or "").lower() or None,
         )
         save_metrics(engine, row.id, metrics)
+
+        declared = load_declared_dates(engine, row.id)
+        signals = _build_signals(row.created_at, intervals, metrics, declared)
+        start_fact, end_fact = reconcile(signals, active_policy, cal, now=moment)
+        save_timeline_facts(engine, row.id, (start_fact, end_fact))
+
+        confidence = min(
+            (start_fact.confidence, end_fact.confidence),
+            key=lambda c: {"high": 3, "medium": 2, "low": 1}[c.value],
+        )
+        save_metrics_confidence(engine, row.id, confidence.value)
+        if start_fact.anomalies or end_fact.anomalies:
+            anomalous += 1
+
         accumulate_workload(row.external_key, intervals, cal, into=workload)  # type: ignore[arg-type]
 
     save_workload(engine, workload, refs)  # type: ignore[arg-type]
-    return {"tickets": len(rows), "intervals": total_intervals}
+    return {
+        "tickets": len(rows),
+        "intervals": total_intervals,
+        "anomalous": anomalous,
+    }
+
+
+def _build_signals(
+    created_at: datetime,
+    intervals: list,
+    metrics,
+    declared: dict[str, tuple[datetime, str]],
+) -> TimelineSignals:
+    """Собрать сырые сигналы тикета для согласования."""
+    declared_start = declared.get("work_start")
+    declared_end = declared.get("work_end")
+
+    # моменты переходов между статусами — для детекта разгребки доски
+    transitions = [
+        iv.started_at for iv in intervals[1:] if iv.started_at is not None
+    ]
+
+    return TimelineSignals(
+        created_at=created_at,
+        system_start=metrics.work_started_at,
+        system_end=metrics.completed_at,
+        declared_start=declared_start[0] if declared_start else None,
+        declared_end=declared_end[0] if declared_end else None,
+        declared_start_precision=declared_start[1] if declared_start else "minute",
+        declared_end_precision=declared_end[1] if declared_end else "minute",
+        is_completed=metrics.is_completed,
+        transition_times=transitions,
+    )
 
 
 def _calendar_id(engine: Engine, team_id: int) -> int:

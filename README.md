@@ -8,8 +8,9 @@ flow efficiency, нагрузка по людям, прогнозы.
 
 ## Состояние
 
-Этап 1 (фундамент расчётов) завершён. Работает на синтетических данных,
-подключения к Jira пока нет — см. `PLAN.md`.
+Завершены этапы 1–3: фундамент расчётов, коллектор Jira, согласование данных.
+Живое подключение к Jira не проверялось (нет доступа) — коллектор протестирован
+на фикстурах и мок-транспорте. Дальше — API и дашборд, см. `PLAN.md`.
 
 ## Архитектура
 
@@ -51,10 +52,45 @@ cp .env.example .env
 ## Использование
 
 ```bash
-.venv/bin/flowlens seed-demo --tickets 500 --months 12   # синтетика
-.venv/bin/flowlens recompute --all                        # пересчёт
-.venv/bin/flowlens stats                                  # сводка
+.venv/bin/flowlens seed-demo --tickets 500 --months 12   # синтетика в базу
+.venv/bin/flowlens export-demo --output demo.ndjson      # синтетика в файл
+.venv/bin/flowlens import demo.ndjson                    # импорт выгрузки
+.venv/bin/flowlens recompute --all                       # пересчёт
+.venv/bin/flowlens quality -v                            # качество данных
+.venv/bin/flowlens stats                                 # сводка
 ```
+
+Сбор данных из Jira (нужен `JIRA_TOKEN` в окружении):
+
+```bash
+cp examples/collector.jira.yml my-jira.yml   # поправьте под свою инсталляцию
+export JIRA_TOKEN=...
+.venv/bin/flowlens sync --config my-jira.yml --dry-run --output dump.ndjson
+.venv/bin/flowlens sync --config my-jira.yml
+```
+
+## Согласование данных
+
+Ключевая проблема реальных данных: сотрудники двигают задачи на доске
+с опозданием, а настоящие даты проставляют вручную. Получается два
+противоречивых источника истины.
+
+FlowLens хранит **оба** сигнала сырыми и выбирает итоговое значение
+по настраиваемой политике, помечая расхождения:
+
+```bash
+# посмотреть, что будет, если верить только истории статусов
+.venv/bin/flowlens recompute-policy --prefer system_only --version system-only
+
+# вернуться к доверию заявленным датам
+.venv/bin/flowlens recompute-policy --prefer declared --version default
+```
+
+Смена политики пересчитывает метрики из event log — обращение к Jira не нужно.
+
+Обнаруживаемые проблемы: незаполненные даты, даты раньше создания задачи,
+перепутанные местами начало и конец, расхождение с историей статусов сверх
+порога, проведение задачи по доске одним махом, нулевая длительность работы.
 
 ## Разработка
 
