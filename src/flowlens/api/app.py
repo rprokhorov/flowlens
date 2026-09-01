@@ -13,6 +13,7 @@ from sqlalchemy import Engine, text
 
 from flowlens import analytics
 from flowlens.analytics import Filters
+from flowlens.core.advice import analyse
 from flowlens.core.quality import build_report
 from flowlens.db import make_engine
 from flowlens.repository import load_quality_rows
@@ -147,6 +148,42 @@ def get_quality(engine: EngineDep) -> dict[str, Any]:
             }
             for group in report.anomalies
         ],
+    }
+
+
+@app.get("/api/advice")
+def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Наблюдения о процессе по детерминированным правилам."""
+    quality_rows = load_quality_rows(engine)
+    report = build_report(quality_rows)
+
+    findings = analyse(
+        summary=analytics.summary(engine, filters),
+        flow=analytics.flow_efficiency(engine, filters),
+        arrival=analytics.arrival_vs_throughput(engine, filters),
+        aging=analytics.aging_wip(engine, filters),
+        people=analytics.people_load(engine, filters),
+        quality={
+            "trustworthy_pct": report.trustworthy_pct,
+            "anomalies": [
+                {"code": g.code, "label": g.label, "count": g.count}
+                for g in report.anomalies
+            ],
+        },
+    )
+    return {
+        "findings": [
+            {
+                "code": f.code,
+                "severity": f.severity.value,
+                "title": f.title,
+                "detail": f.detail,
+                "suggestion": f.suggestion,
+                "evidence": f.evidence,
+                "tickets": f.ticket_keys,
+            }
+            for f in findings
+        ]
     }
 
 

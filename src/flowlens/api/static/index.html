@@ -180,6 +180,28 @@ tbody tr:hover { background: var(--surface-2); }
   background: var(--surface-2); border-left: 3px solid var(--status-warning);
 }
 .loading { color: var(--text-muted); padding: 30px; text-align: center; }
+
+.finding {
+  display: flex; gap: 12px; padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+.finding:last-child { border-bottom: none; }
+.finding-mark {
+  flex: 0 0 4px; border-radius: 2px; align-self: stretch;
+}
+.finding.act .finding-mark   { background: var(--status-critical); }
+.finding.watch .finding-mark { background: var(--status-warning); }
+.finding.info .finding-mark  { background: var(--text-muted); }
+.finding-body { flex: 1; min-width: 0; }
+.finding-title { font-weight: 600; margin-bottom: 3px; }
+.finding-detail { color: var(--text-secondary); font-size: 13px; }
+.finding-suggestion {
+  color: var(--text-muted); font-size: 13px; margin-top: 4px;
+  padding-left: 12px; border-left: 2px solid var(--border);
+}
+.finding-tickets { margin-top: 6px; display: flex; gap: 5px; flex-wrap: wrap; }
+.finding-tickets .pill { color: var(--text-secondary); }
+.no-findings { color: var(--text-muted); padding: 8px 0; }
 .error {
   color: var(--status-critical); padding: 14px;
   border: 1px solid var(--status-critical); border-radius: 8px;
@@ -213,6 +235,13 @@ tbody tr:hover { background: var(--surface-2); }
 <main>
   <div class="tiles" id="tiles"></div>
   <div class="grid" id="grid">
+    <div class="card w12" id="advice-card">
+      <h2>На что стоит посмотреть</h2>
+      <p class="hint">Наблюдения по фиксированным правилам — не оценка команды,
+         а подсказка, где искать причины.</p>
+      <div id="advice"><div class="loading">загрузка…</div></div>
+    </div>
+
     <div class="card w12">
       <h2>Накопительная диаграмма потока</h2>
       <p class="hint">Ширина полосы — сколько задач в фазе. Растущая полоса означает

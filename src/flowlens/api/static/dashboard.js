@@ -385,20 +385,46 @@ function renderQuality(data) {
     ${items || '<div class="quality-hint">Проблем не обнаружено.</div>'}`;
 }
 
+// --- наблюдения -------------------------------------------------------------
+
+function renderAdvice(data) {
+  const container = document.getElementById('advice');
+  if (!data.findings.length) {
+    container.innerHTML =
+      '<div class="no-findings">Отклонений по заданным порогам не обнаружено.</div>';
+    return;
+  }
+  container.innerHTML = data.findings.map(f => `
+    <div class="finding ${f.severity}">
+      <div class="finding-mark"></div>
+      <div class="finding-body">
+        <div class="finding-title">${escapeHtml(f.title)}</div>
+        <div class="finding-detail">${escapeHtml(f.detail)}</div>
+        <div class="finding-suggestion">${escapeHtml(f.suggestion)}</div>
+        ${f.tickets.length ? `<div class="finding-tickets">${
+          f.tickets.map(k => `<span class="pill">${escapeHtml(k)}</span>`).join('')
+        }</div>` : ''}
+      </div>
+    </div>`).join('');
+}
+
 // --- загрузка ---------------------------------------------------------------
 
 async function loadAll() {
   try {
-    const [summary, quality, cfd, cycle, arrival, phases, people, aging] = await Promise.all([
-      fetchJson('/api/summary'),
-      fetch('/api/quality').then(r => r.json()),
-      fetchJson('/api/cfd'),
-      fetchJson('/api/cycle-time'),
-      fetchJson('/api/arrival-throughput', { granularity: 'week' }),
-      fetchJson('/api/flow-efficiency'),
-      fetchJson('/api/people'),
-      fetchJson('/api/aging-wip'),
-    ]);
+    const [summary, quality, cfd, cycle, arrival, phases, people, aging, advice] =
+      await Promise.all([
+        fetchJson('/api/summary'),
+        fetch('/api/quality').then(r => r.json()),
+        fetchJson('/api/cfd'),
+        fetchJson('/api/cycle-time'),
+        fetchJson('/api/arrival-throughput', { granularity: 'week' }),
+        fetchJson('/api/flow-efficiency'),
+        fetchJson('/api/people'),
+        fetchJson('/api/aging-wip'),
+        fetchJson('/api/advice'),
+      ]);
+    renderAdvice(advice);
     renderTiles(summary, quality);
     renderQuality(quality);
     renderCfd(cfd);

@@ -172,8 +172,27 @@ def test_filter_options(client) -> None:
     assert data["period"]["earliest"]
 
 
+def test_advice_endpoint(client) -> None:
+    """Наблюдения приходят с обязательными полями."""
+    data = client.get("/api/advice").json()
+    assert "findings" in data
+    for finding in data["findings"]:
+        assert finding["title"]
+        assert finding["detail"]
+        assert finding["suggestion"], "наблюдение без подсказки бесполезно"
+        assert finding["severity"] in ("act", "watch", "info")
+
+
+def test_advice_sorted_by_severity(client) -> None:
+    order = {"act": 0, "watch": 1, "info": 2}
+    findings = client.get("/api/advice").json()["findings"]
+    ranks = [order[f["severity"]] for f in findings]
+    assert ranks == sorted(ranks)
+
+
 def test_all_endpoints_return_200(client) -> None:
     endpoints = [
+        "/api/advice",
         "/api/summary",
         "/api/cycle-time",
         "/api/cfd",

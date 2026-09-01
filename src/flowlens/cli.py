@@ -314,6 +314,53 @@ def recompute_policy_command(
 
 
 @app.command()
+def advice(
+    days: Annotated[int, typer.Option(help="За сколько последних дней смотреть")] = 90,
+) -> None:
+    """Что стоит посмотреть в процессе."""
+    from datetime import timedelta
+
+    from flowlens import analytics
+    from flowlens.analytics import Filters
+    from flowlens.core.advice import Severity, analyse
+    from flowlens.core.quality import build_report
+    from flowlens.repository import load_quality_rows
+
+    engine = make_engine()
+    filters = Filters(date_from=(datetime.now().date() - timedelta(days=days)))
+
+    report = build_report(load_quality_rows(engine))
+    findings = analyse(
+        summary=analytics.summary(engine, filters),
+        flow=analytics.flow_efficiency(engine, filters),
+        arrival=analytics.arrival_vs_throughput(engine, filters),
+        aging=analytics.aging_wip(engine, filters),
+        people=analytics.people_load(engine, filters),
+        quality={
+            "trustworthy_pct": report.trustworthy_pct,
+            "anomalies": [
+                {"code": g.code, "label": g.label, "count": g.count}
+                for g in report.anomalies
+            ],
+        },
+    )
+
+    if not findings:
+        typer.echo(f"За последние {days} дней ничего примечательного не найдено.")
+        return
+
+    marks = {Severity.ACT: "!!", Severity.WATCH: " !", Severity.INFO: "  "}
+    typer.echo(f"Наблюдения за последние {days} дней:\n")
+    for finding in findings:
+        typer.echo(f"{marks[finding.severity]} {finding.title}")
+        typer.echo(f"     {finding.detail}")
+        typer.echo(f"     → {finding.suggestion}")
+        if finding.ticket_keys:
+            typer.echo(f"     задачи: {', '.join(finding.ticket_keys)}")
+        typer.echo("")
+
+
+@app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Адрес")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Порт")] = 8000,
