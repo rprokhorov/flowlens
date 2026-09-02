@@ -202,7 +202,7 @@ def random_ticket(
     иначе недавно созданные задачи уезжали бы в будущее.
     """
     def past_horizon() -> bool:
-        return horizon is not None and b.cursor >= horizon
+        return b.past_horizon()
     issue_type = _weighted(rng, TYPES)
     priority = _weighted(rng, PRIORITIES)
     dev = rng.choice(PEOPLE)

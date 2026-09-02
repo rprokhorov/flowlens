@@ -113,7 +113,8 @@ def export_demo_command(
     cal = WorkCalendar(name="team", tz="Europe/Moscow")
     rng = random.Random(seed)
 
-    end = datetime.now(msk).replace(hour=11, minute=0, second=0, microsecond=0)
+    # горизонт — фактический текущий момент, иначе события уедут в будущее
+    end = datetime.now(msk).replace(second=0, microsecond=0)
     start = end - timedelta(days=months * 30)
     span = max(1.0, (end - start).total_seconds())
 

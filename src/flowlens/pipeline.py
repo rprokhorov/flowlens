@@ -69,7 +69,8 @@ def seed_demo(
     rng = random.Random(seed)
     seeds: list[TicketSeed] = list(all_scenarios(cal))
 
-    end = datetime.now(MSK).replace(hour=11, minute=0, second=0, microsecond=0)
+    # горизонт — фактический текущий момент: события не должны уходить в будущее
+    end = datetime.now(MSK).replace(second=0, microsecond=0)
     start = end - timedelta(days=months * 30)
 
     span = max(1.0, (end - start).total_seconds())

@@ -164,7 +164,7 @@ function renderTiles(summary, quality) {
       note: `${summary.completed} завершено` },
     { label: 'Не завершено', value: summary.open_tickets, note: 'на текущий момент' },
     { label: 'Время цикла, медиана', value: hours(summary.p50_cycle_s),
-      note: `85-й перцентиль: ${hours(summary.p85_cycle_s)}` },
+      note: `85% — ${hours(summary.p85_cycle_s)}, 95% — ${hours(summary.p95_cycle_s)}` },
     { label: 'Эффективность потока', value: percent(efficiency),
       note: 'доля времени в работе', cls: effClass },
     { label: 'Задач с блокировками', value: summary.ever_blocked,
@@ -338,6 +338,7 @@ function renderCycleTime(data) {
         data: [
           { name: `медиана ${hours(p.p50)}`, xAxis: bucketIndex(data.histogram, p.p50) },
           { name: `85% ${hours(p.p85)}`, xAxis: bucketIndex(data.histogram, p.p85) },
+          { name: `95% ${hours(p.p95)}`, xAxis: bucketIndex(data.histogram, p.p95) },
         ],
       },
     }],
@@ -400,6 +401,7 @@ function renderPhases(data) {
         return `<b>${PHASE_LABEL[phase.phase] || phase.phase}</b><br>` +
                `медиана: ${hours(phase.p50_s)}<br>` +
                `85-й перцентиль: ${hours(phase.p85_s)}<br>` +
+               `95-й перцентиль: ${hours(phase.p95_s)}<br>` +
                `всего за период: ${hours(phase.total_s)}`;
       } },
     grid: { left: 8, right: 70, top: 10, bottom: 8, containLabel: true },
@@ -469,9 +471,13 @@ function renderAging(data) {
   const hint = document.getElementById('aging-hint');
   const body = document.querySelector('#table-aging tbody');
 
+  const over95 = data.over_p95 != null ? data.over_p95 : null;
   hint.textContent =
-    `${data.total} ${plural(data.total, 'задача', 'задачи', 'задач')} не завершено, ` +
-    `из них ${data.over_p85} висят дольше 85-го перцентиля (${hours(data.reference.p85)}).`;
+    `${data.total} ${plural(data.total, 'задача', 'задачи', 'задач')} не завершено. ` +
+    `Дольше 85-го перцентиля (${hours(data.reference.p85)}) висят ${data.over_p85}` +
+    (over95 !== null
+      ? `, дольше 95-го (${hours(data.reference.p95)}) — ${over95}.`
+      : '.');
 
   if (!data.items.length) {
     emptyChart(chart, 'Незавершённых задач нет');
@@ -510,9 +516,19 @@ function renderAging(data) {
       data: byPhase[phase].map(t => ({ value: [t.age_s, index], ticket: t })),
       markLine: index === 0 && data.reference.p85 ? {
         symbol: 'none', silent: true,
-        label: { formatter: '85-й перцентиль', color: css('--text-muted'), fontSize: 11 },
-        lineStyle: { color: css('--status-warning'), type: 'dashed', width: 1 },
-        data: [{ xAxis: data.reference.p85 }],
+        lineStyle: { type: 'dashed', width: 1 },
+        data: [
+          // подписи разведены по высоте: на фоне длинного хвоста
+          // линии перцентилей стоят вплотную и накладываются
+          { name: '85%', xAxis: data.reference.p85,
+            lineStyle: { color: css('--status-warning') },
+            label: { formatter: '85%', position: 'insideEndTop',
+              color: css('--status-warning'), fontSize: 11 } },
+          ...(data.reference.p95 ? [{ name: '95%', xAxis: data.reference.p95,
+            lineStyle: { color: css('--status-critical') },
+            label: { formatter: '95%', position: 'insideEndBottom',
+              color: css('--status-critical'), fontSize: 11 } }] : []),
+        ],
       } : undefined,
     })),
   }, true);
@@ -530,7 +546,8 @@ function renderAging(data) {
       <td>${escapeHtml(item.assignee || '—')}</td>
       <td class="num">${hours(item.age_s)}</td>
       <td>${item.is_blocked ? '<span class="pill blocked">блок</span>' : ''}
-          ${item.over_p85 ? '<span class="pill over">долго</span>' : ''}</td>
+          ${item.over_p95 ? '<span class="pill low">очень долго</span>'
+            : item.over_p85 ? '<span class="pill over">долго</span>' : ''}</td>
     </tr>`).join('');
 }
 
@@ -1045,7 +1062,8 @@ async function openChartData(kind) {
             { title: 'Возраст', num: true, render: i => hours(i.age_s) },
             { title: '', render: i =>
               (i.is_blocked ? '<span class="pill blocked">блок</span> ' : '') +
-              (i.over_p85 ? '<span class="pill over">долго</span>' : '') },
+              (i.over_p95 ? '<span class="pill low">очень долго</span>'
+                : i.over_p85 ? '<span class="pill over">долго</span>' : '') },
           ]),
       };
     },

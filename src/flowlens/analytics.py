@@ -332,8 +332,10 @@ def aging_wip(engine: Engine, filters: Filters) -> dict[str, Any]:
         rows = conn.execute(text(query), params).all()
 
     reference = cycle_time_distribution(engine, filters)
-    p85 = reference.get("percentiles", {}).get("p85", 0)
-    p50 = reference.get("percentiles", {}).get("p50", 0)
+    percentiles = reference.get("percentiles", {})
+    p50 = percentiles.get("p50", 0)
+    p85 = percentiles.get("p85", 0)
+    p95 = percentiles.get("p95", 0)
 
     items = [
         {
@@ -348,14 +350,16 @@ def aging_wip(engine: Engine, filters: Filters) -> dict[str, Any]:
             "assignee": r.assignee,
             "board_order": r.board_order,
             "over_p85": bool(p85 and (r.age_s or 0) > p85),
+            "over_p95": bool(p95 and (r.age_s or 0) > p95),
         }
         for r in rows
     ]
     return {
         "items": items,
-        "reference": {"p50": p50, "p85": p85},
+        "reference": {"p50": p50, "p85": p85, "p95": p95},
         "total": len(items),
         "over_p85": sum(1 for i in items if i["over_p85"]),
+        "over_p95": sum(1 for i in items if i["over_p95"]),
         "blocked": sum(1 for i in items if i["is_blocked"]),
         "unit": filters.unit,
     }
@@ -389,7 +393,8 @@ def flow_efficiency(engine: Engine, filters: Filters) -> dict[str, Any]:
                CAST(sum(ti.duration_business_s) AS bigint) AS total,
                count(*) AS intervals,
                percentile_disc(0.5) WITHIN GROUP (ORDER BY ti.duration_business_s) AS p50,
-               percentile_disc(0.85) WITHIN GROUP (ORDER BY ti.duration_business_s) AS p85
+               percentile_disc(0.85) WITHIN GROUP (ORDER BY ti.duration_business_s) AS p85,
+               percentile_disc(0.95) WITHIN GROUP (ORDER BY ti.duration_business_s) AS p95
         FROM ticket_interval ti
         JOIN ticket t ON t.id = ti.ticket_id
         {_where([*conditions[:len(conditions) - (1 if confidence else 0)],
@@ -424,6 +429,7 @@ def flow_efficiency(engine: Engine, filters: Filters) -> dict[str, Any]:
                 "intervals": p.intervals,
                 "p50_s": p.p50 or 0,
                 "p85_s": p.p85 or 0,
+                "p95_s": p.p95 or 0,
             }
             for p in phases
         ],
@@ -502,6 +508,7 @@ def summary(engine: Engine, filters: Filters) -> dict[str, Any]:
             count(*) FILTER (WHERE m.cycle_time_business_s IS NOT NULL) AS completed,
             percentile_disc(0.5) WITHIN GROUP (ORDER BY m.cycle_time_business_s) AS p50_cycle,
             percentile_disc(0.85) WITHIN GROUP (ORDER BY m.cycle_time_business_s) AS p85_cycle,
+            percentile_disc(0.95) WITHIN GROUP (ORDER BY m.cycle_time_business_s) AS p95_cycle,
             avg(m.flow_efficiency) AS avg_efficiency,
             CAST(sum(m.reopen_count) AS bigint) AS reopens,
             count(*) FILTER (WHERE m.blocked_episode_count > 0) AS ever_blocked,
@@ -520,6 +527,7 @@ def summary(engine: Engine, filters: Filters) -> dict[str, Any]:
         "completed": row.completed or 0,
         "p50_cycle_s": row.p50_cycle or 0,
         "p85_cycle_s": row.p85_cycle or 0,
+        "p95_cycle_s": row.p95_cycle or 0,
         "avg_flow_efficiency": (
             round(float(row.avg_efficiency), 4) if row.avg_efficiency else None
         ),

@@ -62,6 +62,7 @@ def test_static_assets_served(client) -> None:
 
 def test_summary(client) -> None:
     data = client.get("/api/summary").json()
+    assert data["p50_cycle_s"] <= data["p85_cycle_s"] <= data["p95_cycle_s"]
     assert data["total_tickets"] > 0
     assert data["open_tickets"] + data["completed"] <= data["total_tickets"] * 2
     for field in ("total_tickets", "open_tickets", "completed", "reopens"):
@@ -98,7 +99,7 @@ def test_cfd_done_monotonic(client) -> None:
 def test_cycle_time_percentiles(client) -> None:
     data = client.get("/api/cycle-time").json()
     p = data["percentiles"]
-    assert p["p50"] <= p["p85"] <= p["p95"]
+    assert p["p50"] <= p["p70"] <= p["p85"] <= p["p95"]
     for key, value in p.items():
         assert_numeric(value, f"percentiles.{key}")
 

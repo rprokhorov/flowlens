@@ -102,10 +102,19 @@ class TicketBuilder:
         self._advance(business_seconds)
         return self
 
+    def past_horizon(self) -> bool:
+        """Курсор достиг предела генерации."""
+        return self.horizon is not None and self._cursor >= self.horizon
+
     def move_to(self, status: str, actor: str | None = None) -> TicketBuilder:
-        """Перейти в другой статус."""
+        """Перейти в другой статус.
+
+        За горизонтом переходы не записываются: событий в будущем быть не может.
+        """
         if status not in BOARD_BY_NAME:
             raise ValueError(f"unknown status: {status}")
+        if self.past_horizon():
+            return self
         previous = self._status
         if BOARD_BY_NAME[previous].is_terminal and not BOARD_BY_NAME[status].is_terminal:
             self._reopens += 1
@@ -130,7 +139,7 @@ class TicketBuilder:
 
     def assign(self, person: str) -> TicketBuilder:
         """Сменить исполнителя."""
-        if person == self._assignee:
+        if person == self._assignee or self.past_horizon():
             return self
         self._events.append(
             Event(

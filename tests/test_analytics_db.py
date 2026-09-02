@@ -90,7 +90,7 @@ def test_summary_shape(data) -> None:
     assert result["total_tickets"] > 0
     assert result["completed"] <= result["total_tickets"]
     assert 0 <= result["trustworthy_pct"] <= 100
-    assert result["p85_cycle_s"] >= result["p50_cycle_s"]
+    assert result["p50_cycle_s"] <= result["p85_cycle_s"] <= result["p95_cycle_s"]
 
 
 def test_summary_respects_type_filter(data) -> None:
@@ -244,12 +244,31 @@ def test_aging_wip_marks_over_p85(data) -> None:
         assert item["over_p85"] == (item["age_s"] > p85)
 
 
+def test_aging_wip_marks_over_p95(data) -> None:
+    """95-й перцентиль отделяет по-настоящему застрявшие задачи."""
+    result = aging_wip(data, Filters())
+    reference = result["reference"]
+    assert reference["p85"] <= reference["p95"]
+    for item in result["items"]:
+        assert item["over_p95"] == (item["age_s"] > reference["p95"])
+        if item["over_p95"]:
+            assert item["over_p85"], "превышение p95 влечёт превышение p85"
+    assert result["over_p95"] <= result["over_p85"]
+
+
 # --- эффективность потока ----------------------------------------------------
 
 
 def test_flow_efficiency_in_range(data) -> None:
     result = flow_efficiency(data, Filters())
     assert result["efficiency"] is None or 0 <= result["efficiency"] <= 1
+
+
+def test_phase_percentiles_ordered(data) -> None:
+    """Перцентили по фазам не убывают."""
+    result = flow_efficiency(data, Filters())
+    for phase in result["by_phase"]:
+        assert phase["p50_s"] <= phase["p85_s"] <= phase["p95_s"], phase["phase"]
 
 
 def test_phases_sorted_by_total_time(data) -> None:
