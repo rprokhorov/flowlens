@@ -398,3 +398,9 @@ def test_service_classes_endpoint(client) -> None:
     data = client.get("/api/service-classes").json()
     assert "overall_share" in data
     assert "by_class" in data
+
+
+def test_hidden_queue_endpoint(client) -> None:
+    data = client.get("/api/hidden-queue").json()
+    assert "by_phase" in data
+    assert "share" in data

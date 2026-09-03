@@ -19,6 +19,7 @@ from flowlens.analytics import (
     cycle_time_distribution,
     expedite_share,
     flow_efficiency,
+    hidden_queue,
     interventions,
     open_backlog_size,
     people_load,
@@ -497,3 +498,36 @@ def test_expedite_share_flags_devalued_priority(data) -> None:
     """Флаг обесценивания включается ровно выше десятой части."""
     result = expedite_share(data, Filters())
     assert result["priority_devalued"] == (result["overall_share"] > 0.10)
+
+
+# --- скрытое ожидание --------------------------------------------------------
+
+
+def test_hidden_queue_share_within_bounds(data) -> None:
+    result = hidden_queue(data, Filters())
+    assert 0 <= result["share"] <= 1
+    for phase in result["by_phase"]:
+        assert 0 <= phase["share"] <= 1
+        assert phase["waiting_s"] <= phase["total_s"]
+
+
+def test_hidden_queue_only_active_phases(data) -> None:
+    """Очередь ищем внутри статусов, помеченных работой, — в очередях она и так видна."""
+    result = hidden_queue(data, Filters())
+    phases = {p["phase"] for p in result["by_phase"]}
+    assert "backlog" not in phases
+    assert "blocked" not in phases
+
+
+def test_hidden_queue_detects_review_waiting(data) -> None:
+    """Часть задач лежит в проверке до того, как её возьмёт ревьюер."""
+    result = hidden_queue(data, Filters())
+    verify = next((p for p in result["by_phase"] if p["phase"] == "verify"), None)
+    assert verify is not None
+    assert verify["waiting_s"] > 0
+
+
+def test_hidden_queue_totals_match_phases(data) -> None:
+    result = hidden_queue(data, Filters())
+    assert sum(p["waiting_s"] for p in result["by_phase"]) == result["hidden_waiting_s"]
+    assert sum(p["total_s"] for p in result["by_phase"]) == result["active_s"]

@@ -55,6 +55,21 @@ class Thresholds:
     # разовый провал ниже цели — в природе перцентиля; сигналим по серии
     sle_min_periods: int = 3
     sle_tolerance: float = 0.05
+    # выше этой доли ожидания статус стоит признать очередью, а не работой
+    hidden_queue_share: float = 0.20
+
+
+# названия фаз в именительном падеже; для предложного есть отдельный словарь
+# в _rule_slowest_phase — согласование по падежам того не стоит, чтобы городить
+# морфологию ради двух правил
+PHASE_LABELS = {
+    "backlog": "бэклог",
+    "in_progress": "разработка",
+    "blocked": "блокировка",
+    "review": "ревью",
+    "verify": "проверка",
+    "done_pending": "ожидание релиза",
+}
 
 
 def analyse(
@@ -67,6 +82,7 @@ def analyse(
     quality: dict[str, Any],
     blockers: dict[str, Any] | None = None,
     sle: dict[str, Any] | None = None,
+    hidden: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     thresholds: Thresholds | None = None,
 ) -> list[Finding]:
@@ -82,6 +98,7 @@ def analyse(
         _rule_blocker_pareto,
         _rule_blocker_reasons_missing,
         _rule_sle_missed,
+        _rule_hidden_queue,
         _rule_aging,
         _rule_wip_per_person,
         _rule_reopen_rate,
@@ -99,6 +116,7 @@ def analyse(
             quality=quality,
             blockers=blockers or {},
             sle=sle or {},
+            hidden=hidden or {},
             forecast=forecast or {},
             t=t,
         )
@@ -341,6 +359,41 @@ def _rule_sle_missed(*, sle, t, **_) -> Finding | None:
             "target": target,
             "recent_attainment": [round(a, 3) for a in recent],
             "average": round(average, 3),
+        },
+    )
+
+
+def _rule_hidden_queue(*, hidden, t, **_) -> Finding | None:
+    """Внутри «активного» статуса прячется очередь.
+
+    Статус помечен работой, но задача в нём ждёт, пока её кто-нибудь возьмёт.
+    Это завышает flow efficiency и прячет самую дорогую очередь: по отчётам
+    работа идёт, фактически задача лежит.
+    """
+    phases = [p for p in hidden.get("by_phase", []) if p["share"] >= t.hidden_queue_share]
+    if not phases:
+        return None
+
+    worst = max(phases, key=lambda p: p["waiting_s"])
+    label = PHASE_LABELS.get(worst["phase"], worst["phase"])
+
+    return Finding(
+        code="hidden_queue",
+        severity=Severity.WATCH,
+        title=f"В статусе «{label}» {_pct(worst['share'])} времени — ожидание",
+        detail=(
+            f"Задачи проводят там {_hours(worst['waiting_s'])} до того, как их "
+            "кто-нибудь возьмёт. Статус считается активной работой, поэтому это "
+            "время попадает в touch time и завышает эффективность потока."
+        ),
+        suggestion=(
+            "Либо разделить статус на «ждёт» и «в работе», либо признать его "
+            "очередью. Пока он считается работой, самая дорогая очередь не видна."
+        ),
+        evidence={
+            "phase": worst["phase"],
+            "waiting_share": round(float(worst["share"]), 3),
+            "waiting_s": worst["waiting_s"],
         },
     )
 

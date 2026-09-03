@@ -346,6 +346,7 @@ def advice(
         people=analytics.people_load(engine, filters),
         blockers=analytics.blockers(engine, filters),
         sle=analytics.sle_attainment(engine, filters),
+        hidden=analytics.hidden_queue(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days

@@ -944,6 +944,84 @@ def expedite_share(
     }
 
 
+# --- скрытое ожидание внутри активных фаз ------------------------------------
+
+
+def hidden_queue(engine: Engine, filters: Filters) -> dict[str, Any]:
+    """Ожидание, спрятанное внутри статусов, помеченных активной работой.
+
+    Статус вроде `qa` активен для ревьюера, но для задачи он часто очередь:
+    она лежит, пока у кого-то не дойдут руки. Признак — задача попала в фазу,
+    но ещё не сменила исполнителя на того, кто будет её смотреть. Это время
+    попадает в touch time и завышает flow efficiency, пряча при этом самую
+    дорогую очередь: формально работа идёт, фактически задача ждёт.
+
+    Оценка снизу: часть интервалов действительно активна с первой минуты.
+    Но если доля велика, классификацию статуса стоит пересмотреть.
+    """
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+
+    query = f"""
+        WITH ordered AS (
+            -- нулевые интервалы отбрасываем: смена исполнителя в момент перехода
+            -- создаёт технический интервал, из-за которого «предыдущим» becomes
+            -- уже новый человек
+            SELECT ti.ticket_id, ti.seq, CAST(ti.phase AS text) AS phase,
+                   ti.assignee_id, ws.is_active_work,
+                   {filters.duration_column()} AS duration_s
+            FROM ticket_interval ti
+            JOIN ticket t ON t.id = ti.ticket_id
+            JOIN workflow_status ws ON ws.id = ti.status_id
+            {_where([*conditions, "ti.ended_at IS NOT NULL",
+                     f"COALESCE({filters.duration_column()}, 0) > 0"])}
+        ),
+        phases AS (
+            SELECT ticket_id, seq, phase, assignee_id, is_active_work, duration_s,
+                   LAG(assignee_id) OVER w AS previous_assignee,
+                   LAG(phase) OVER w AS previous_phase
+            FROM ordered
+            WINDOW w AS (PARTITION BY ticket_id ORDER BY seq)
+        )
+        SELECT phase,
+               CAST(sum(duration_s) AS bigint) AS total_s,
+               -- задача сменила фазу, но осталась на прежнем человеке: её ещё
+               -- никто не взял, значит она ждёт, а не обрабатывается
+               CAST(sum(duration_s) FILTER (
+                   WHERE phase IS DISTINCT FROM previous_phase
+                     AND previous_phase IS NOT NULL
+                     AND assignee_id IS NOT DISTINCT FROM previous_assignee
+               ) AS bigint) AS waiting_s,
+               count(*) AS intervals
+        FROM phases
+        WHERE is_active_work
+        GROUP BY phase
+        ORDER BY waiting_s DESC NULLS LAST
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    phases = [
+        {
+            "phase": r.phase,
+            "total_s": r.total_s or 0,
+            "waiting_s": r.waiting_s or 0,
+            "share": round((r.waiting_s or 0) / r.total_s, 4) if r.total_s else 0.0,
+            "intervals": r.intervals,
+        }
+        for r in rows
+    ]
+    total = sum(p["total_s"] for p in phases)
+    waiting = sum(p["waiting_s"] for p in phases)
+
+    return {
+        "by_phase": phases,
+        "active_s": total,
+        "hidden_waiting_s": waiting,
+        "share": round(waiting / total, 4) if total else None,
+    }
+
+
 # --- нагрузка по людям -------------------------------------------------------
 
 

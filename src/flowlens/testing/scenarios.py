@@ -266,7 +266,14 @@ def random_ticket(
         b.flag(None)
         b.stay(max(HOUR, work // 3))
 
-    b.move_to("qa").assign(qa_person)
+    # часть задач лежит в qa до того, как их возьмёт ревьюер: для задачи это
+    # очередь, хотя статус помечен активной работой
+    if rng.random() < 0.35:
+        b.move_to("qa")
+        b.stay(max(HOUR, int(rng.expovariate(1 / (4 * HOUR)))))
+        b.assign(qa_person)
+    else:
+        b.move_to("qa").assign(qa_person)
     b.stay(max(HOUR, int(rng.lognormvariate(9.4, 0.8))))
     if past_horizon() or rng.random() < open_chance * 0.35:
         return b.build(scenario="random_open", summary=f"{issue_type} {key}")

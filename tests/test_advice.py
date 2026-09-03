@@ -91,6 +91,17 @@ def inputs(**overrides):
             "promises": [{"fixed_at": "2026-05-01T00:00:00", "sample_size": 200,
                           "percentile": 85}],
         },
+        "hidden": {
+            "active_s": 1000 * HOUR,
+            "hidden_waiting_s": 50 * HOUR,
+            "share": 0.05,
+            "by_phase": [
+                {"phase": "in_progress", "total_s": 800 * HOUR,
+                 "waiting_s": 40 * HOUR, "share": 0.05, "intervals": 100},
+                {"phase": "verify", "total_s": 200 * HOUR,
+                 "waiting_s": 10 * HOUR, "share": 0.05, "intervals": 60},
+            ],
+        },
     }
     base.update(overrides)
     return base
@@ -561,3 +572,52 @@ def test_sle_mild_shortfall_is_watch_not_act() -> None:
     }))
     finding = next(f for f in findings if f.code == "sle_missed")
     assert finding.severity is Severity.WATCH
+
+
+# --- скрытое ожидание --------------------------------------------------------
+
+
+def test_hidden_queue_flagged_when_review_waits() -> None:
+    """Статус, помеченный работой, на деле оказался очередью."""
+    findings = analyse(**inputs(hidden={
+        "active_s": 1000 * HOUR,
+        "hidden_waiting_s": 250 * HOUR,
+        "share": 0.25,
+        "by_phase": [
+            {"phase": "verify", "total_s": 400 * HOUR,
+             "waiting_s": 200 * HOUR, "share": 0.5, "intervals": 60},
+            {"phase": "in_progress", "total_s": 600 * HOUR,
+             "waiting_s": 50 * HOUR, "share": 0.083, "intervals": 100},
+        ],
+    }))
+    finding = next(f for f in findings if f.code == "hidden_queue")
+    assert finding.evidence["phase"] == "verify"
+    assert "проверка" in finding.title
+
+
+def test_hidden_queue_silent_when_small() -> None:
+    assert "hidden_queue" not in codes(analyse(**inputs()))
+
+
+def test_hidden_queue_picks_largest_loss() -> None:
+    """Из нескольких проблемных фаз выбираем ту, где теряется больше времени."""
+    findings = analyse(**inputs(hidden={
+        "active_s": 1000 * HOUR,
+        "hidden_waiting_s": 300 * HOUR,
+        "share": 0.3,
+        "by_phase": [
+            {"phase": "verify", "total_s": 100 * HOUR,
+             "waiting_s": 50 * HOUR, "share": 0.5, "intervals": 20},
+            {"phase": "in_progress", "total_s": 500 * HOUR,
+             "waiting_s": 250 * HOUR, "share": 0.5, "intervals": 80},
+        ],
+    }))
+    finding = next(f for f in findings if f.code == "hidden_queue")
+    assert finding.evidence["phase"] == "in_progress"
+
+
+def test_hidden_queue_silent_without_data() -> None:
+    findings = analyse(**inputs(hidden={
+        "active_s": 0, "hidden_waiting_s": 0, "share": None, "by_phase": [],
+    }))
+    assert "hidden_queue" not in codes(findings)
