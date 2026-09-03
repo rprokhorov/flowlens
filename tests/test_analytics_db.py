@@ -120,10 +120,7 @@ def test_percentile_is_observed_value(data) -> None:
     result = cycle_time_distribution(data, Filters())
     with data.begin() as conn:
         exists = conn.execute(
-            text(
-                "SELECT count(*) FROM ticket_metrics "
-                "WHERE cycle_time_business_s = :value"
-            ),
+            text("SELECT count(*) FROM ticket_metrics WHERE cycle_time_business_s = :value"),
             {"value": result["percentiles"]["p85"]},
         ).scalar_one()
     assert exists > 0
@@ -238,10 +235,11 @@ def test_aging_wip_excludes_completed(data) -> None:
 
 
 def test_aging_wip_marks_over_p85(data) -> None:
+    """Порог берётся из перцентилей своего типа задач."""
     result = aging_wip(data, Filters())
-    p85 = result["reference"]["p85"]
     for item in result["items"]:
-        assert item["over_p85"] == (item["age_s"] > p85)
+        p85 = item["reference"].get("p85")
+        assert item["over_p85"] == bool(p85 and item["age_s"] > p85)
 
 
 def test_aging_wip_marks_over_p95(data) -> None:
@@ -250,10 +248,33 @@ def test_aging_wip_marks_over_p95(data) -> None:
     reference = result["reference"]
     assert reference["p85"] <= reference["p95"]
     for item in result["items"]:
-        assert item["over_p95"] == (item["age_s"] > reference["p95"])
+        p95 = item["reference"].get("p95")
+        assert item["over_p95"] == bool(p95 and item["age_s"] > p95)
         if item["over_p95"]:
             assert item["over_p85"], "превышение p95 влечёт превышение p85"
     assert result["over_p95"] <= result["over_p85"]
+
+
+def test_aging_wip_age_counts_from_work_start(data) -> None:
+    """Возраст задачи больше времени в текущем статусе, если она уже переезжала."""
+    result = aging_wip(data, Filters())
+    moved = [i for i in result["items"] if i["age_s"] > i["status_age_s"]]
+    assert moved, "в выборке должны быть задачи, сменившие статус"
+    for item in result["items"]:
+        assert item["age_s"] >= item["status_age_s"]
+
+
+def test_aging_wip_excludes_backlog(data) -> None:
+    """Бэклог — очередь, а не незавершённая работа."""
+    result = aging_wip(data, Filters())
+    assert all(item["phase"] != "backlog" for item in result["items"])
+
+
+def test_aging_wip_percentiles_scoped_by_type(data) -> None:
+    """У разных типов задач свои пороги, если выборки хватает."""
+    result = aging_wip(data, Filters())
+    for percentiles in result["reference_by_type"].values():
+        assert percentiles["p50"] <= percentiles["p85"] <= percentiles["p95"]
 
 
 # --- эффективность потока ----------------------------------------------------

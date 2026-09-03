@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import Engine, text
+
+from flowlens.core.calendar import calendar_from_row
 
 TimeUnit = Literal["business", "calendar"]
 
@@ -39,6 +41,9 @@ class Filters:
 
 
 CONFIDENCE_RANK = {"low": 1, "medium": 2, "high": 3}
+
+# ниже этого числа завершённых задач перцентиль пляшет от одной задачи
+MIN_PERCENTILE_SAMPLE = 20
 
 
 def _ticket_conditions(filters: Filters, params: dict[str, Any], alias: str = "t") -> list[str]:
@@ -277,9 +282,7 @@ def arrival_vs_throughput(
 
     with engine.begin() as conn:
         arrivals = {r.period: r.count for r in conn.execute(text(arrivals_query), params).all()}
-        throughput = {
-            r.period: r.count for r in conn.execute(text(throughput_query), params).all()
-        }
+        throughput = {r.period: r.count for r in conn.execute(text(throughput_query), params).all()}
 
     periods = sorted(set(arrivals) | set(throughput))
     arrived = [arrivals.get(p, 0) for p in periods]
@@ -313,29 +316,70 @@ def aging_wip(engine: Engine, filters: Filters) -> dict[str, Any]:
     conditions = _ticket_conditions(filters, params)
     conditions.append("ti.ended_at IS NULL")
     conditions.append("NOT ws.is_terminal")
+    # Бэклог — это очередь, а не незавершённая работа: задача там ещё не начата,
+    # и её «возраст» ничего не говорит о потоке. WIP начинается с commitment point.
+    conditions.append("ti.phase <> 'backlog'")
 
+    # Возраст считается от входа в работу, а не от попадания в текущий статус:
+    # задача, вчера переехавшая в qa после трёх недель разработки, стара три
+    # недели, а не один день. Время в текущем статусе отдаётся отдельным полем —
+    # оно отвечает на другой вопрос: где именно задача стоит сейчас.
     query = f"""
         SELECT t.external_key, t.summary, t.issue_type, t.priority,
                ws.external_name AS status, CAST(ti.phase AS text) AS phase,
-               ti.{filters.unit == 'business' and 'duration_business_s' or 'duration_calendar_s'}
-                   AS age_s,
+               {filters.duration_column()} AS status_age_s,
+               COALESCE(ttf.effective_at, t.created_at) AS started_at,
                ti.is_blocked, p.display_name AS assignee,
-               ws.board_order
+               ws.board_order,
+               c.name AS cal_name, c.tz AS cal_tz,
+               CAST(c.workweek AS text) AS cal_workweek,
+               c.holidays AS cal_holidays, c.extra_workdays AS cal_extra
         FROM ticket_interval ti
         JOIN ticket t ON t.id = ti.ticket_id
         JOIN workflow_status ws ON ws.id = ti.status_id
+        JOIN calendar c ON c.id = ti.calendar_id
         LEFT JOIN person p ON p.id = ti.assignee_id
+        LEFT JOIN ticket_timeline_fact ttf
+               ON ttf.ticket_id = t.id AND ttf.boundary = 'work_start'
         {_where(conditions)}
-        ORDER BY age_s DESC NULLS LAST
     """
     with engine.begin() as conn:
         rows = conn.execute(text(query), params).all()
 
-    reference = cycle_time_distribution(engine, filters)
-    percentiles = reference.get("percentiles", {})
-    p50 = percentiles.get("p50", 0)
-    p85 = percentiles.get("p85", 0)
-    p95 = percentiles.get("p95", 0)
+    now = datetime.now(UTC)
+    ages: dict[str, int] = {}
+    for r in rows:
+        if filters.unit == "calendar":
+            ages[r.external_key] = max(0, int((now - r.started_at).total_seconds()))
+        else:
+            cal = calendar_from_row(
+                r.cal_name,
+                r.cal_tz,
+                r.cal_workweek,
+                tuple(r.cal_holidays or ()),
+                tuple(r.cal_extra or ()),
+            )
+            ages[r.external_key] = cal.business_seconds_between(r.started_at, now)
+    rows = sorted(rows, key=lambda r: ages[r.external_key], reverse=True)
+
+    # Перцентили берутся по своему типу задач: сравнивать возраст баги с временем
+    # цикла эпиков бессмысленно — крупная задача вечно «в красном», мелкая всегда
+    # «в норме». Если по типу выборка мала, перцентиль по нему недостоверен,
+    # и мы честно откатываемся на общий.
+    overall = cycle_time_distribution(engine, filters).get("percentiles", {})
+    by_type: dict[str, dict[str, int]] = {}
+    for issue_type in {r.issue_type for r in rows}:
+        scoped = replace(filters, issue_types=[issue_type])
+        distribution = cycle_time_distribution(engine, scoped)
+        if distribution.get("count", 0) >= MIN_PERCENTILE_SAMPLE:
+            by_type[issue_type] = distribution["percentiles"]
+
+    def reference_for(issue_type: str) -> dict[str, int]:
+        return by_type.get(issue_type, overall)
+
+    p50 = overall.get("p50", 0)
+    p85 = overall.get("p85", 0)
+    p95 = overall.get("p95", 0)
 
     items = [
         {
@@ -345,18 +389,27 @@ def aging_wip(engine: Engine, filters: Filters) -> dict[str, Any]:
             "priority": r.priority,
             "status": r.status,
             "phase": r.phase,
-            "age_s": r.age_s or 0,
+            "age_s": ages[r.external_key],
+            "status_age_s": r.status_age_s or 0,
             "is_blocked": r.is_blocked,
             "assignee": r.assignee,
             "board_order": r.board_order,
-            "over_p85": bool(p85 and (r.age_s or 0) > p85),
-            "over_p95": bool(p95 and (r.age_s or 0) > p95),
+            "over_p85": bool(
+                reference_for(r.issue_type).get("p85")
+                and ages[r.external_key] > reference_for(r.issue_type)["p85"]
+            ),
+            "over_p95": bool(
+                reference_for(r.issue_type).get("p95")
+                and ages[r.external_key] > reference_for(r.issue_type)["p95"]
+            ),
+            "reference": reference_for(r.issue_type),
         }
         for r in rows
     ]
     return {
         "items": items,
         "reference": {"p50": p50, "p85": p85, "p95": p95},
+        "reference_by_type": by_type,
         "total": len(items),
         "over_p85": sum(1 for i in items if i["over_p85"]),
         "over_p95": sum(1 for i in items if i["over_p95"]),
@@ -397,8 +450,11 @@ def flow_efficiency(engine: Engine, filters: Filters) -> dict[str, Any]:
                percentile_disc(0.95) WITHIN GROUP (ORDER BY ti.duration_business_s) AS p95
         FROM ticket_interval ti
         JOIN ticket t ON t.id = ti.ticket_id
-        {_where([*conditions[:len(conditions) - (1 if confidence else 0)],
-                 "ti.ended_at IS NOT NULL"])}
+        {
+        _where(
+            [*conditions[: len(conditions) - (1 if confidence else 0)], "ti.ended_at IS NOT NULL"]
+        )
+    }
         GROUP BY ti.phase
         ORDER BY total DESC NULLS LAST
     """
@@ -738,8 +794,8 @@ def ticket_list(
                t.created_at, t.closed_at, t.is_subtask,
                ws.external_name AS status,
                p.display_name AS assignee,
-               m.{filters.metric_column('cycle_time')} AS cycle_s,
-               m.{filters.metric_column('lead_time')} AS lead_s,
+               m.{filters.metric_column("cycle_time")} AS cycle_s,
+               m.{filters.metric_column("lead_time")} AS lead_s,
                m.touch_time_business_s, m.queue_time_business_s,
                m.blocked_time_business_s, m.flow_efficiency,
                m.reopen_count, m.assignee_change_count, m.status_change_count,
@@ -967,9 +1023,7 @@ def ticket_detail(engine: Engine, key: str) -> dict[str, Any] | None:
                 "blocked_s": metrics.blocked_time_business_s,
                 "release_wait_s": metrics.release_wait_business_s,
                 "flow_efficiency": (
-                    float(metrics.flow_efficiency)
-                    if metrics.flow_efficiency is not None
-                    else None
+                    float(metrics.flow_efficiency) if metrics.flow_efficiency is not None else None
                 ),
                 "reopens": metrics.reopen_count,
                 "assignee_changes": metrics.assignee_change_count,
