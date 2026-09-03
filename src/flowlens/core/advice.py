@@ -52,6 +52,9 @@ class Thresholds:
     handoff_count: float = 3.0
     # выше этой доли блокировок без причины разбивка по причинам недостоверна
     unknown_blocker_share: float = 0.30
+    # разовый провал ниже цели — в природе перцентиля; сигналим по серии
+    sle_min_periods: int = 3
+    sle_tolerance: float = 0.05
 
 
 def analyse(
@@ -63,6 +66,7 @@ def analyse(
     people: dict[str, Any],
     quality: dict[str, Any],
     blockers: dict[str, Any] | None = None,
+    sle: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     thresholds: Thresholds | None = None,
 ) -> list[Finding]:
@@ -77,6 +81,7 @@ def analyse(
         _rule_blocked_time,
         _rule_blocker_pareto,
         _rule_blocker_reasons_missing,
+        _rule_sle_missed,
         _rule_aging,
         _rule_wip_per_person,
         _rule_reopen_rate,
@@ -93,6 +98,7 @@ def analyse(
             people=people,
             quality=quality,
             blockers=blockers or {},
+            sle=sle or {},
             forecast=forecast or {},
             t=t,
         )
@@ -291,6 +297,51 @@ def _rule_blocker_reasons_missing(*, blockers, t, **_) -> Finding | None:
             "заполнения, а не реальные помехи."
         ),
         evidence={"unknown_share": round(float(unknown), 3)},
+    )
+
+
+def _rule_sle_missed(*, sle, t, **_) -> Finding | None:
+    """Обещание перестало выполняться.
+
+    Смотрим на последние периоды, а не на всю историю: обещание могло быть
+    верным полгода назад и устареть с тех пор — это разные ситуации, и лечатся
+    они по-разному. Разовый провал не считаем: он в природе перцентиля.
+    """
+    attainment = [a for a in sle.get("attainment", []) if a is not None]
+    target = sle.get("target")
+    if not target or len(attainment) < t.sle_min_periods:
+        return None
+
+    recent = attainment[-t.sle_min_periods :]
+    # разовый провал в серии — нормальный разброс перцентиля; сигналим, только
+    # когда ниже цели оказывается большинство периодов
+    below = [value for value in recent if value < target - t.sle_tolerance]
+    if len(below) <= len(recent) // 2:
+        return None
+
+    worst = min(recent)
+    average = sum(recent) / len(recent)
+    promise = sle.get("promises", [{}])[0]
+
+    return Finding(
+        code="sle_missed",
+        severity=Severity.ACT if average < target - 2 * t.sle_tolerance else Severity.WATCH,
+        title=f"Обещание держится в {_pct(average)} случаев вместо {_pct(target)}",
+        detail=(
+            f"За последние {len(recent)} периода попадание опускалось до {_pct(worst)}. "
+            f"Обещание зафиксировано {promise.get('fixed_at', '')[:10]} "
+            f"по выборке из {promise.get('sample_size', 0)} задач."
+        ),
+        suggestion=(
+            "Либо система замедлилась и надо искать причину, либо обещание "
+            "перестало ей соответствовать и его пора пересчитать. "
+            "Сравнение с датой фиксации показывает, что из двух."
+        ),
+        evidence={
+            "target": target,
+            "recent_attainment": [round(a, 3) for a in recent],
+            "average": round(average, 3),
+        },
     )
 
 

@@ -300,6 +300,32 @@ CREATE TABLE ticket_metrics (
     computed_at            timestamptz NOT NULL DEFAULT now()
 );
 
+-- ожидаемый уровень сервиса: обещание, зафиксированное на момент времени.
+-- Пока перцентиль пересчитывается на лету, обещание всегда равно факту,
+-- и вопрос «мы всё ещё держим слово?» не имеет смысла.
+CREATE TABLE service_level_expectation (
+    id            bigserial PRIMARY KEY,
+    team_id       bigint REFERENCES team(id),
+    issue_type    text,                    -- NULL = любой тип
+    priority      text,                    -- NULL = любой приоритет
+    percentile    int    NOT NULL DEFAULT 85,
+    target_business_s bigint NOT NULL,
+    sample_size   int    NOT NULL,         -- на какой выборке зафиксировали
+    fixed_at      timestamptz NOT NULL DEFAULT now(),
+    fixed_by      bigint REFERENCES person(id),
+    note          text,
+    retired_at    timestamptz,             -- NULL = действует
+    CHECK (percentile BETWEEN 1 AND 99),
+    CHECK (target_business_s > 0)
+);
+
+-- действующее обещание на класс — ровно одно
+CREATE UNIQUE INDEX sle_active_class_idx
+    ON service_level_expectation (
+        COALESCE(team_id, 0), COALESCE(issue_type, ''), COALESCE(priority, ''), percentile
+    )
+    WHERE retired_at IS NULL;
+
 -- нагрузка по людям (пункт B, вариант 3: время владения)
 CREATE TABLE person_workload_daily (
     person_id     bigint NOT NULL REFERENCES person(id),

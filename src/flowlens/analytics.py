@@ -584,6 +584,178 @@ def blockers(engine: Engine, filters: Filters) -> dict[str, Any]:
     }
 
 
+# --- ожидаемый уровень сервиса (SLE) -----------------------------------------
+
+
+def fix_sle(
+    engine: Engine,
+    filters: Filters,
+    *,
+    percentile: int = 85,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Зафиксировать обещание по текущим данным.
+
+    Обещание нужно именно зафиксировать: пока порог пересчитывается на лету,
+    он всегда совпадает с фактом, и вопрос «мы всё ещё держим слово?» не имеет
+    смысла. Дата фиксации и размер выборки сохраняются рядом — по ним видно,
+    устарело обещание или система действительно изменилась.
+    """
+    distribution = cycle_time_distribution(engine, filters)
+    count = distribution.get("count", 0)
+    if count < MIN_PERCENTILE_SAMPLE:
+        raise ValueError(
+            f"недостаточно данных для обещания: {count} задач, "
+            f"нужно хотя бы {MIN_PERCENTILE_SAMPLE}"
+        )
+
+    key = f"p{percentile}"
+    target = distribution["percentiles"].get(key)
+    if not target:
+        raise ValueError(f"перцентиль {key} не рассчитан")
+
+    issue_type = filters.issue_types[0] if len(filters.issue_types) == 1 else None
+    priority = filters.priorities[0] if len(filters.priorities) == 1 else None
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE service_level_expectation SET retired_at = now() "
+                "WHERE retired_at IS NULL AND percentile = :pct "
+                "  AND COALESCE(team_id, 0) = COALESCE(:team, 0) "
+                "  AND COALESCE(issue_type, '') = COALESCE(:itype, '') "
+                "  AND COALESCE(priority, '') = COALESCE(:prio, '')"
+            ),
+            {"pct": percentile, "team": filters.team_id, "itype": issue_type, "prio": priority},
+        )
+        row = conn.execute(
+            text(
+                "INSERT INTO service_level_expectation "
+                "  (team_id, issue_type, priority, percentile, target_business_s, "
+                "   sample_size, note) "
+                "VALUES (:team, :itype, :prio, :pct, :target, :n, :note) "
+                "RETURNING id, fixed_at"
+            ),
+            {
+                "team": filters.team_id,
+                "itype": issue_type,
+                "prio": priority,
+                "pct": percentile,
+                "target": target,
+                "n": count,
+                "note": note,
+            },
+        ).one()
+
+    return {
+        "id": row.id,
+        "issue_type": issue_type,
+        "priority": priority,
+        "percentile": percentile,
+        "target_business_s": target,
+        "sample_size": count,
+        "fixed_at": row.fixed_at.isoformat(),
+    }
+
+
+def active_sle(engine: Engine, filters: Filters) -> list[dict[str, Any]]:
+    """Действующие обещания, наиболее конкретное — первым."""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, issue_type, priority, percentile, target_business_s, "
+                "       sample_size, fixed_at, note "
+                "FROM service_level_expectation "
+                "WHERE retired_at IS NULL "
+                "  AND COALESCE(team_id, 0) = COALESCE(:team, 0) "
+                "ORDER BY (issue_type IS NULL), (priority IS NULL), percentile"
+            ),
+            {"team": filters.team_id},
+        ).all()
+    return [
+        {
+            "id": r.id,
+            "issue_type": r.issue_type,
+            "priority": r.priority,
+            "percentile": r.percentile,
+            "target_business_s": r.target_business_s,
+            "sample_size": r.sample_size,
+            "fixed_at": r.fixed_at.isoformat(),
+            "note": r.note,
+        }
+        for r in rows
+    ]
+
+
+def sle_attainment(
+    engine: Engine, filters: Filters, granularity: str = "month"
+) -> dict[str, Any]:
+    """Доля задач, уложившихся в зафиксированное обещание, по периодам.
+
+    Это единственный график, который отвечает на вопрос «наши обещания всё ещё
+    правдивы?». Целевая линия — сам перцентиль: при p85 попадание должно
+    держаться около 85%, а устойчивое падение ниже означает, что обещание
+    больше не соответствует системе.
+    """
+    promises = active_sle(engine, filters)
+    if not promises:
+        return {"periods": [], "attainment": [], "target": None, "promises": []}
+
+    # наиболее конкретное обещание выигрывает: тип+приоритет, потом тип, потом общее
+    default = next((p for p in promises if not p["issue_type"] and not p["priority"]), None)
+    by_type = {p["issue_type"]: p for p in promises if p["issue_type"] and not p["priority"]}
+    by_class = {
+        (p["issue_type"], p["priority"]): p
+        for p in promises
+        if p["issue_type"] and p["priority"]
+    }
+
+    params: dict[str, Any] = {"granularity": granularity}
+    conditions = _ticket_conditions(filters, params)
+    column = f"m.{filters.metric_column('cycle_time')}"
+    conditions.append(f"{column} IS NOT NULL")
+    confidence = _confidence_condition(filters, params)
+    if confidence:
+        conditions.append(confidence)
+
+    query = f"""
+        SELECT CAST(date_trunc(:granularity, t.closed_at) AS date) AS period,
+               t.issue_type, t.priority, {column} AS value
+        FROM ticket_metrics m
+        JOIN ticket t ON t.id = m.ticket_id
+        {_where([*conditions, "t.closed_at IS NOT NULL"])}
+        ORDER BY period
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    buckets: dict[Any, dict[str, int]] = {}
+    for r in rows:
+        promise = (
+            by_class.get((r.issue_type, r.priority)) or by_type.get(r.issue_type) or default
+        )
+        if promise is None:
+            continue
+        bucket = buckets.setdefault(r.period, {"met": 0, "total": 0})
+        bucket["total"] += 1
+        if r.value <= promise["target_business_s"]:
+            bucket["met"] += 1
+
+    periods = sorted(buckets)
+    target_percentile = promises[0]["percentile"]
+    return {
+        "periods": [p.isoformat() for p in periods],
+        "attainment": [
+            round(buckets[p]["met"] / buckets[p]["total"], 4) if buckets[p]["total"] else None
+            for p in periods
+        ],
+        "counts": [buckets[p]["total"] for p in periods],
+        "met": [buckets[p]["met"] for p in periods],
+        "target": target_percentile / 100,
+        "promises": promises,
+    }
+
+
 # --- нагрузка по людям -------------------------------------------------------
 
 

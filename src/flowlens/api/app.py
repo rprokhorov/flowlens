@@ -126,6 +126,26 @@ def get_blockers(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     return analytics.blockers(engine, filters)
 
 
+@app.get("/api/sle")
+def get_sle(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Действующие обещания и доля попаданий в них."""
+    return analytics.sle_attainment(engine, filters)
+
+
+@app.post("/api/sle")
+def post_sle(
+    engine: EngineDep,
+    filters: FiltersDep,
+    percentile: Annotated[int, Query(ge=1, le=99)] = 85,
+    note: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """Зафиксировать обещание по текущим данным."""
+    try:
+        return analytics.fix_sle(engine, filters, percentile=percentile, note=note)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/people")
 def get_people(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     """Распределение нагрузки между людьми."""
@@ -177,6 +197,7 @@ def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
         aging=analytics.aging_wip(engine, filters),
         people=analytics.people_load(engine, filters),
         blockers=analytics.blockers(engine, filters),
+        sle=analytics.sle_attainment(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days

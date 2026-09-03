@@ -82,6 +82,15 @@ def inputs(**overrides):
             ],
             "current": [],
         },
+        "sle": {
+            "target": 0.85,
+            "attainment": [0.86, 0.88, 0.85, 0.87],
+            "counts": [40, 42, 38, 41],
+            "met": [34, 37, 32, 36],
+            "periods": ["2026-05", "2026-06", "2026-07", "2026-08"],
+            "promises": [{"fixed_at": "2026-05-01T00:00:00", "sample_size": 200,
+                          "percentile": 85}],
+        },
     }
     base.update(overrides)
     return base
@@ -481,3 +490,74 @@ def test_blocker_rules_silent_without_episodes() -> None:
     )
     assert "blocker_pareto" not in codes(findings)
     assert "blocker_reasons_missing" not in codes(findings)
+
+
+# --- ожидаемый уровень сервиса -----------------------------------------------
+
+
+def test_sle_missed_flagged_on_sustained_shortfall() -> None:
+    """Серия периодов ниже цели означает, что обещание больше не держится."""
+    findings = analyse(**inputs(sle={
+        "target": 0.85,
+        "attainment": [0.84, 0.62, 0.58, 0.55],
+        "counts": [40, 42, 38, 41],
+        "met": [34, 26, 22, 23],
+        "periods": ["2026-05", "2026-06", "2026-07", "2026-08"],
+        "promises": [{"fixed_at": "2026-05-01T00:00:00", "sample_size": 200,
+                      "percentile": 85}],
+    }))
+    finding = next(f for f in findings if f.code == "sle_missed")
+    assert finding.severity is Severity.ACT
+    assert finding.evidence["average"] < 0.85
+
+
+def test_sle_single_dip_ignored() -> None:
+    """Разовый провал ниже цели — в природе перцентиля, а не сигнал."""
+    findings = analyse(**inputs(sle={
+        "target": 0.85,
+        "attainment": [0.86, 0.88, 0.60, 0.87],
+        "counts": [40, 42, 38, 41],
+        "met": [34, 37, 23, 36],
+        "periods": ["2026-05", "2026-06", "2026-07", "2026-08"],
+        "promises": [{"fixed_at": "2026-05-01T00:00:00", "sample_size": 200,
+                      "percentile": 85}],
+    }))
+    assert "sle_missed" not in codes(findings)
+
+
+def test_sle_healthy_is_silent() -> None:
+    assert "sle_missed" not in codes(analyse(**inputs()))
+
+
+def test_sle_silent_without_promise() -> None:
+    """Без зафиксированного обещания сравнивать не с чем."""
+    findings = analyse(**inputs(sle={
+        "target": None, "attainment": [], "counts": [], "met": [],
+        "periods": [], "promises": [],
+    }))
+    assert "sle_missed" not in codes(findings)
+
+
+def test_sle_silent_on_short_history() -> None:
+    findings = analyse(**inputs(sle={
+        "target": 0.85,
+        "attainment": [0.4, 0.3],
+        "counts": [10, 12], "met": [4, 4],
+        "periods": ["2026-07", "2026-08"],
+        "promises": [{"fixed_at": "2026-05-01T00:00:00", "sample_size": 200,
+                      "percentile": 85}],
+    }))
+    assert "sle_missed" not in codes(findings)
+
+
+def test_sle_mild_shortfall_is_watch_not_act() -> None:
+    findings = analyse(**inputs(sle={
+        "target": 0.85,
+        "attainment": [0.78, 0.77, 0.79],
+        "counts": [40, 42, 38], "met": [31, 32, 30],
+        "periods": ["2026-06", "2026-07", "2026-08"],
+        "promises": [{"fixed_at": "2026-05-01T00:00:00", "sample_size": 200,
+                      "percentile": 85}],
+    }))
+    finding = next(f for f in findings if f.code == "sle_missed")
+    assert finding.severity is Severity.WATCH

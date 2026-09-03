@@ -361,3 +361,23 @@ def test_blockers_endpoint(client) -> None:
 def test_blockers_endpoint_respects_filters(client) -> None:
     data = client.get("/api/blockers", params={"issue_types": "Bug"}).json()
     assert data["tickets"] >= data["blocked_tickets"]
+
+
+def test_sle_endpoint_empty_without_promises(client) -> None:
+    data = client.get("/api/sle").json()
+    assert "promises" in data
+
+
+def test_sle_fix_and_read(client) -> None:
+    fixed = client.post("/api/sle", params={"percentile": 85})
+    assert fixed.status_code == 200
+    assert fixed.json()["target_business_s"] > 0
+
+    report = client.get("/api/sle").json()
+    assert report["target"] == 0.85
+    assert report["promises"]
+
+
+def test_sle_fix_rejects_small_sample(client) -> None:
+    response = client.post("/api/sle", params={"issue_type": "не существует"})
+    assert response.status_code == 422

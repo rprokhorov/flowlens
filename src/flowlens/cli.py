@@ -345,6 +345,7 @@ def advice(
         aging=analytics.aging_wip(engine, filters),
         people=analytics.people_load(engine, filters),
         blockers=analytics.blockers(engine, filters),
+        sle=analytics.sle_attainment(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days
@@ -372,6 +373,70 @@ def advice(
         if finding.ticket_keys:
             typer.echo(f"     задачи: {', '.join(finding.ticket_keys)}")
         typer.echo("")
+
+
+@app.command("sle")
+def sle_command(
+    fix: Annotated[
+        bool, typer.Option("--fix", help="Зафиксировать обещание по текущим данным")
+    ] = False,
+    percentile: Annotated[int, typer.Option(help="Перцентиль обещания")] = 85,
+    issue_type: Annotated[
+        str | None, typer.Option(help="Только для одного типа задач")
+    ] = None,
+    days: Annotated[int, typer.Option(help="За сколько последних дней брать данные")] = 90,
+    note: Annotated[str | None, typer.Option(help="Пометка о причине фиксации")] = None,
+) -> None:
+    """Ожидаемый уровень сервиса: зафиксировать обещание или проверить его."""
+    from datetime import timedelta
+
+    from flowlens import analytics
+    from flowlens.analytics import Filters
+
+    engine = make_engine()
+    filters = Filters(
+        date_from=(datetime.now().date() - timedelta(days=days)),
+        issue_types=[issue_type] if issue_type else [],
+    )
+
+    if fix:
+        try:
+            result = analytics.fix_sle(engine, filters, percentile=percentile, note=note)
+        except ValueError as exc:
+            typer.echo(f"Не могу зафиксировать: {exc}")
+            raise typer.Exit(code=1) from exc
+        scope = result["issue_type"] or "все типы"
+        hours = result["target_business_s"] / 3600
+        typer.echo(
+            f"Обещание зафиксировано: {result['percentile']}% задач ({scope}) "
+            f"за {hours:.1f} рабочих часов, по выборке из {result['sample_size']} задач."
+        )
+        return
+
+    report = analytics.sle_attainment(engine, filters)
+    if not report["promises"]:
+        typer.echo("Обещаний пока нет. Зафиксировать: flowlens sle --fix")
+        return
+
+    typer.echo("Действующие обещания:")
+    for promise in report["promises"]:
+        scope = promise["issue_type"] or "все типы"
+        hours = promise["target_business_s"] / 3600
+        typer.echo(
+            f"  {promise['percentile']}% · {scope}: {hours:.1f} ч "
+            f"(зафиксировано {promise['fixed_at'][:10]}, n={promise['sample_size']})"
+        )
+
+    if not report["periods"]:
+        return
+    typer.echo(f"\nПопадание при цели {report['target']:.0%}:")
+    for period, value, total in zip(
+        report["periods"], report["attainment"], report["counts"], strict=True
+    ):
+        if value is None:
+            continue
+        mark = "  " if value >= report["target"] - 0.05 else " !"
+        typer.echo(f"{mark} {period}  {value:6.1%}  (n={total})")
 
 
 @app.command()
