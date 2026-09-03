@@ -419,3 +419,16 @@ def test_dashboard_endpoints_all_registered(client) -> None:
         "/api/hidden-queue", "/api/people", "/api/quality", "/api/advice",
     ]:
         assert client.get(path).status_code == 200, path
+
+
+def test_dashboard_versions_static_assets(client) -> None:
+    """Статика подключается с версией, иначе браузер отдаёт старую копию.
+
+    Без этого после обновления dashboard.js браузер берёт закэшированный файл,
+    в котором новых вкладок нет, а showTab() молча сводит незнакомое имя
+    к «Обзору» — снаружи выглядит как «все вкладки показывают одно и то же».
+    """
+    html = client.get("/").text
+    for asset in ("dashboard.js", "style.css"):
+        assert f"/static/{asset}?v=" in html, asset
+        assert f'"/static/{asset}"' not in html, f"{asset} подключён без версии"

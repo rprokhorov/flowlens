@@ -434,7 +434,18 @@ def dashboard() -> HTMLResponse:
     index = STATIC_DIR / "index.html"
     if not index.exists():
         return HTMLResponse("<h1>FlowLens</h1><p>Файл дашборда не найден.</p>", status_code=404)
-    return HTMLResponse(index.read_text(encoding="utf-8"))
+    html = index.read_text(encoding="utf-8")
+
+    # Браузер кэширует /static/dashboard.js по неизменному пути и после
+    # обновления отдаёт старую копию. Незнакомые ей вкладки showTab() молча
+    # сводит к «Обзору» — снаружи это выглядит как «все вкладки одинаковые».
+    # Подмешиваем время изменения файла в URL: меняется файл — меняется адрес.
+    for asset in ("dashboard.js", "style.css"):
+        path = STATIC_DIR / asset
+        if path.exists():
+            version = int(path.stat().st_mtime)
+            html = html.replace(f"/static/{asset}", f"/static/{asset}?v={version}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 __all__ = ["app"]
