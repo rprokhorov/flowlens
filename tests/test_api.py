@@ -381,3 +381,20 @@ def test_sle_fix_and_read(client) -> None:
 def test_sle_fix_rejects_small_sample(client) -> None:
     response = client.post("/api/sle", params={"issue_type": "не существует"})
     assert response.status_code == 422
+
+
+def test_transitions_endpoint(client) -> None:
+    data = client.get("/api/transitions").json()
+    assert "cells" in data
+    assert "backflow_rate" in data
+
+
+def test_backlog_endpoint(client) -> None:
+    data = client.get("/api/backlog").json()
+    assert data["size"] == sum(b["count"] for b in data["histogram"])
+
+
+def test_service_classes_endpoint(client) -> None:
+    data = client.get("/api/service-classes").json()
+    assert "overall_share" in data
+    assert "by_class" in data

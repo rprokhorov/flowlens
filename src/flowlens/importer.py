@@ -112,6 +112,7 @@ def import_tickets(
             )
 
         stats.people = len(person_ids)
+        assign_service_classes(engine, source_id)
         _finish_sync_run(engine, run_id, stats, status="ok")
     except Exception as exc:
         _finish_sync_run(engine, run_id, stats, status="failed", error=str(exc))
@@ -212,6 +213,47 @@ def _ensure_team(engine: Engine, team_name: str) -> tuple[int, int]:
             {"name": team_name, "cal": calendar_id},
         ).scalar_one()
     return team_id, calendar_id
+
+
+def assign_service_classes(engine: Engine, source_id: int) -> int:
+    """Проставить класс обслуживания по правилу issue_type × priority.
+
+    Класс — решение ядра, а не поле источника: в Jira его нет, но правила
+    обработки у срочной баги и у плановой задачи разные, и без этого различия
+    агрегаты вроде «WIP = 12» ничего не значат. Двенадцать standard — здоровая
+    система; шесть expedite среди них — команда в режиме тушения пожара.
+    """
+    with engine.begin() as conn:
+        # правила по умолчанию: создаются один раз, дальше их можно править руками
+        conn.execute(
+            text(
+                "INSERT INTO service_class (source_id, issue_type, priority, name) "
+                "SELECT :src, t.issue_type, t.priority, "
+                "  CASE "
+                "    WHEN t.priority = 'Blocker' THEN 'expedite' "
+                "    WHEN t.priority = 'High' AND t.issue_type = 'Bug' THEN 'expedite' "
+                "    WHEN t.priority = 'Low' THEN 'intangible' "
+                "    ELSE 'standard' "
+                "  END "
+                "FROM (SELECT DISTINCT issue_type, priority FROM ticket "
+                "      WHERE source_id = :src AND priority IS NOT NULL) t "
+                "ON CONFLICT (source_id, issue_type, priority) DO NOTHING"
+            ),
+            {"src": source_id},
+        )
+        result = conn.execute(
+            text(
+                "UPDATE ticket t SET service_class_id = sc.id "
+                "FROM service_class sc "
+                "WHERE sc.source_id = t.source_id "
+                "  AND sc.issue_type = t.issue_type "
+                "  AND sc.priority IS NOT DISTINCT FROM t.priority "
+                "  AND t.source_id = :src "
+                "  AND t.service_class_id IS DISTINCT FROM sc.id"
+            ),
+            {"src": source_id},
+        )
+    return result.rowcount
 
 
 def _load_statuses(engine: Engine, source_id: int) -> dict[str, int]:

@@ -146,6 +146,28 @@ def post_sle(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get("/api/transitions")
+def get_transitions(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Матрица переходов между статусами с выделением возвратов."""
+    return analytics.transition_matrix(engine, filters)
+
+
+@app.get("/api/backlog")
+def get_backlog(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Размер очереди и возраст лежащих в ней задач."""
+    return analytics.backlog_age(engine, filters)
+
+
+@app.get("/api/service-classes")
+def get_service_classes(
+    engine: EngineDep,
+    filters: FiltersDep,
+    granularity: Annotated[Literal["week", "month"], Query()] = "month",
+) -> dict[str, Any]:
+    """Доля срочных задач во времени и состав классов обслуживания."""
+    return analytics.expedite_share(engine, filters, granularity)
+
+
 @app.get("/api/people")
 def get_people(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     """Распределение нагрузки между людьми."""

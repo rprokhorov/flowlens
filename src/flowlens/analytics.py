@@ -756,6 +756,194 @@ def sle_attainment(
     }
 
 
+# --- переходы между статусами ------------------------------------------------
+
+
+def transition_matrix(engine: Engine, filters: Filters) -> dict[str, Any]:
+    """Куда и откуда переходят задачи, с выделением возвратов.
+
+    Возврат — переход в статус с меньшим board_order. Он объясняет ту часть
+    длинного времени цикла, которую иначе списывают на «долгое ревью»:
+    дважды вернувшаяся задача проходит ожидание трижды. Матрица показывает
+    не только сколько возвратов, но и на каком стыке процесса они происходят.
+    """
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+
+    query = f"""
+        WITH moves AS (
+            SELECT ti.ticket_id,
+                   ws.external_name AS from_status,
+                   ws.board_order   AS from_order,
+                   CAST(ws.phase AS text) AS from_phase,
+                   LEAD(ws.external_name) OVER w AS to_status,
+                   LEAD(ws.board_order)   OVER w AS to_order,
+                   LEAD(CAST(ws.phase AS text)) OVER w AS to_phase
+            FROM ticket_interval ti
+            JOIN ticket t ON t.id = ti.ticket_id
+            JOIN workflow_status ws ON ws.id = ti.status_id
+            {_where(conditions)}
+            WINDOW w AS (PARTITION BY ti.ticket_id ORDER BY ti.seq)
+        )
+        SELECT from_status, to_status,
+               CAST(count(*) AS bigint) AS moves,
+               -- выход из блокировки формально идёт назад по доске, но это
+               -- возобновление работы, а не доработка: возвратом не считаем
+               bool_or(
+                   to_order < from_order
+                   AND from_phase <> 'blocked'
+                   AND to_phase <> 'blocked'
+               ) AS is_backflow
+        FROM moves
+        WHERE to_status IS NOT NULL AND to_status <> from_status
+        GROUP BY from_status, to_status,
+                 (to_order < from_order AND from_phase <> 'blocked' AND to_phase <> 'blocked')
+        ORDER BY moves DESC
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    cells = [
+        {
+            "from": r.from_status,
+            "to": r.to_status,
+            "moves": r.moves,
+            "is_backflow": bool(r.is_backflow),
+        }
+        for r in rows
+    ]
+    total = sum(c["moves"] for c in cells)
+    backflow = sum(c["moves"] for c in cells if c["is_backflow"])
+
+    return {
+        "cells": cells,
+        "total_moves": total,
+        "backflow_moves": backflow,
+        "backflow_rate": round(backflow / total, 4) if total else None,
+        "top_backflows": [c for c in cells if c["is_backflow"]][:5],
+    }
+
+
+# --- очередь -----------------------------------------------------------------
+
+
+def backlog_age(engine: Engine, filters: Filters) -> dict[str, Any]:
+    """Сколько задач ждёт в бэклоге и как давно.
+
+    Формально это не метрика потока — работа ещё не начата, — но именно она
+    определяет customer lead time. При очереди в 200 задач и темпе 10 в неделю
+    новая задача не может быть сделана раньше чем через 20 недель, каким бы
+    срочным ни был запрос; пока это число не на экране, приоритизация ведётся
+    вслепую. Длинный хвост «старше полугода» — прямая заявка на массовое
+    закрытие: такие задачи не будут сделаны никогда и только шумят.
+    """
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+    conditions.append("t.closed_at IS NULL")
+    conditions.append("ttf.effective_at IS NULL")
+
+    query = f"""
+        SELECT t.external_key, t.summary, t.issue_type, t.priority,
+               CAST(EXTRACT(EPOCH FROM (now() - t.created_at)) AS bigint) AS age_s
+        FROM ticket t
+        LEFT JOIN ticket_timeline_fact ttf
+               ON ttf.ticket_id = t.id AND ttf.boundary = 'work_start'
+        {_where(conditions)}
+        ORDER BY age_s DESC
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    day = 86400
+    buckets = [
+        ("до месяца", 0, 30 * day),
+        ("1–3 месяца", 30 * day, 90 * day),
+        ("3–6 месяцев", 90 * day, 180 * day),
+        ("больше полугода", 180 * day, None),
+    ]
+    histogram = [
+        {
+            "label": label,
+            "count": sum(1 for r in rows if lo <= r.age_s and (hi is None or r.age_s < hi)),
+        }
+        for label, lo, hi in buckets
+    ]
+    ages = sorted(r.age_s for r in rows)
+
+    return {
+        "size": len(rows),
+        "histogram": histogram,
+        "p50_age_s": _percentile(ages, 50) if ages else None,
+        "p85_age_s": _percentile(ages, 85) if ages else None,
+        "oldest": [
+            {
+                "key": r.external_key,
+                "summary": r.summary,
+                "type": r.issue_type,
+                "priority": r.priority,
+                "age_s": r.age_s,
+            }
+            for r in rows[:10]
+        ],
+    }
+
+
+# --- классы обслуживания -----------------------------------------------------
+
+
+def expedite_share(
+    engine: Engine, filters: Filters, granularity: str = "month"
+) -> dict[str, Any]:
+    """Доля срочных задач во времени — диагностика управляемости приоритетов.
+
+    Устойчивый рост означает, что система потеряла управление приоритетами:
+    когда срочно всё, не срочно ничто, и ни одно обещание не выполнимо.
+    Виден этот сигнал раньше, чем испортятся сроки.
+
+    Отдельно проверяем, не обесценился ли сам приоритет: если «высших» задач
+    больше десятой части, поле перестало нести информацию, и разбивка по нему
+    ничего не даёт.
+    """
+    params: dict[str, Any] = {"granularity": granularity}
+    conditions = _ticket_conditions(filters, params)
+
+    query = f"""
+        SELECT CAST(date_trunc(:granularity, t.created_at) AS date) AS period,
+               CAST(count(*) AS bigint) AS total,
+               CAST(count(*) FILTER (WHERE sc.name = 'expedite') AS bigint) AS expedite,
+               CAST(count(*) FILTER (WHERE sc.name IS NULL) AS bigint) AS unclassified
+        FROM ticket t
+        LEFT JOIN service_class sc ON sc.id = t.service_class_id
+        {_where(conditions)}
+        GROUP BY period ORDER BY period
+    """
+    classes_query = f"""
+        SELECT COALESCE(sc.name, 'unclassified') AS name,
+               CAST(count(*) AS bigint) AS total
+        FROM ticket t
+        LEFT JOIN service_class sc ON sc.id = t.service_class_id
+        {_where(conditions)}
+        GROUP BY name ORDER BY total DESC
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+        class_rows = conn.execute(text(classes_query), params).all()
+
+    overall = sum(r.total for r in rows)
+    expedited = sum(r.expedite for r in rows)
+    share = expedited / overall if overall else 0.0
+
+    return {
+        "periods": [r.period.isoformat() for r in rows],
+        "share": [round(r.expedite / r.total, 4) if r.total else 0.0 for r in rows],
+        "counts": [r.total for r in rows],
+        "overall_share": round(share, 4),
+        # выше этой доли «срочное» перестаёт отличаться от обычного
+        "priority_devalued": share > 0.10,
+        "by_class": [{"name": r.name, "count": r.total} for r in class_rows],
+    }
+
+
 # --- нагрузка по людям -------------------------------------------------------
 
 

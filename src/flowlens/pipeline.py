@@ -19,6 +19,7 @@ from flowlens.core.reconciliation import (
     reconcile,
 )
 from flowlens.core.workload import DailyLoad, accumulate_workload
+from flowlens.importer import assign_service_classes
 from flowlens.repository import (
     ensure_reference_data,
     insert_ticket,
@@ -96,6 +97,7 @@ def seed_demo(
         insert_ticket(engine, s, refs, people)
         events += len(s.events)
 
+    assign_service_classes(engine, refs["source_id"])
     return SeedResult(tickets=len(seeds), events=events, people=len(people))
 
 

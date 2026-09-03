@@ -13,15 +13,18 @@ from flowlens.analytics import (
     arrival_vs_throughput,
     arrivals_by_weekday,
     average_wip,
+    backlog_age,
     blockers,
     cumulative_flow,
     cycle_time_distribution,
+    expedite_share,
     flow_efficiency,
     interventions,
     open_backlog_size,
     people_load,
     summary,
     throughput_history,
+    transition_matrix,
 )
 from flowlens.db import make_engine
 from flowlens.pipeline import recompute_all, seed_demo
@@ -420,3 +423,77 @@ def test_blockers_current_are_open(data) -> None:
     for item in result["current"]:
         assert item["age_s"] >= 0
         assert item["reason"]
+
+
+# --- переходы между статусами ------------------------------------------------
+
+
+def test_transition_matrix_counts_moves(data) -> None:
+    result = transition_matrix(data, Filters())
+    assert result["total_moves"] > 0
+    assert sum(c["moves"] for c in result["cells"]) == result["total_moves"]
+
+
+def test_transition_matrix_marks_backflow(data) -> None:
+    """Возврат из проверки в разработку — движение назад по доске."""
+    result = transition_matrix(data, Filters())
+    backflows = {(c["from"], c["to"]) for c in result["cells"] if c["is_backflow"]}
+    assert ("qa", "in progress") in backflows
+
+
+def test_transition_matrix_excludes_unblocking(data) -> None:
+    """Выход из блокировки — возобновление работы, а не доработка."""
+    result = transition_matrix(data, Filters())
+    for cell in result["cells"]:
+        if "blocked" in cell["from"] or "blocked" in cell["to"]:
+            assert not cell["is_backflow"]
+
+
+def test_transition_matrix_rate_within_bounds(data) -> None:
+    result = transition_matrix(data, Filters())
+    assert 0 <= result["backflow_rate"] <= 1
+
+
+# --- очередь -----------------------------------------------------------------
+
+
+def test_backlog_age_counts_unstarted_only(data) -> None:
+    """В очереди только то, что ещё не начали."""
+    result = backlog_age(data, Filters())
+    assert result["size"] == sum(b["count"] for b in result["histogram"])
+
+
+def test_backlog_age_histogram_buckets(data) -> None:
+    result = backlog_age(data, Filters())
+    labels = [b["label"] for b in result["histogram"]]
+    assert labels == ["до месяца", "1–3 месяца", "3–6 месяцев", "больше полугода"]
+
+
+def test_backlog_age_oldest_sorted(data) -> None:
+    ages = [t["age_s"] for t in backlog_age(data, Filters())["oldest"]]
+    assert ages == sorted(ages, reverse=True)
+
+
+# --- классы обслуживания -----------------------------------------------------
+
+
+def test_expedite_share_within_bounds(data) -> None:
+    result = expedite_share(data, Filters())
+    assert 0 <= result["overall_share"] <= 1
+    for value in result["share"]:
+        assert 0 <= value <= 1
+
+
+def test_expedite_share_classes_cover_all_tickets(data) -> None:
+    """Каждая задача попадает ровно в один класс."""
+    result = expedite_share(data, Filters())
+    total = sum(c["count"] for c in result["by_class"])
+    with data.begin() as conn:
+        tickets = conn.execute(text("SELECT count(*) FROM ticket")).scalar_one()
+    assert total == tickets
+
+
+def test_expedite_share_flags_devalued_priority(data) -> None:
+    """Флаг обесценивания включается ровно выше десятой части."""
+    result = expedite_share(data, Filters())
+    assert result["priority_devalued"] == (result["overall_share"] > 0.10)
