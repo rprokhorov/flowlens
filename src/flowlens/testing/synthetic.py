@@ -137,6 +137,27 @@ class TicketBuilder:
             self._first_active_at = self._cursor
         return self
 
+    def flag(self, reason: str | None, actor: str | None = None) -> TicketBuilder:
+        """Поставить или снять флаг блокировки с текстом причины.
+
+        Пустая причина означает снятие флага. Текст свободный — так же, как
+        он приходит из Jira; категорию из него выводит core.blockers.
+        """
+        if self.past_horizon():
+            return self
+        self._events.append(
+            Event(
+                kind=EventKind.FLAG_CHANGE,
+                occurred_at=self._cursor,
+                actor=actor or self._assignee or self.reporter,
+                field_name="Flagged",
+                old_value=None,
+                new_value=reason,
+                source_event_id=self._next_id(),
+            )
+        )
+        return self
+
     def assign(self, person: str) -> TicketBuilder:
         """Сменить исполнителя."""
         if person == self._assignee or self.past_horizon():

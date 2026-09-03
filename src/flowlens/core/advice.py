@@ -50,6 +50,8 @@ class Thresholds:
     data_quality_pct: float = 60.0
     stale_ticket_multiplier: float = 2.0
     handoff_count: float = 3.0
+    # выше этой доли блокировок без причины разбивка по причинам недостоверна
+    unknown_blocker_share: float = 0.30
 
 
 def analyse(
@@ -60,6 +62,7 @@ def analyse(
     aging: dict[str, Any],
     people: dict[str, Any],
     quality: dict[str, Any],
+    blockers: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     thresholds: Thresholds | None = None,
 ) -> list[Finding]:
@@ -72,6 +75,8 @@ def analyse(
         _rule_queue_growth,
         _rule_flow_efficiency,
         _rule_blocked_time,
+        _rule_blocker_pareto,
+        _rule_blocker_reasons_missing,
         _rule_aging,
         _rule_wip_per_person,
         _rule_reopen_rate,
@@ -87,6 +92,7 @@ def analyse(
             aging=aging,
             people=people,
             quality=quality,
+            blockers=blockers or {},
             forecast=forecast or {},
             t=t,
         )
@@ -178,9 +184,7 @@ def _rule_flow_efficiency(*, flow, t, **_) -> Finding | None:
     queue_share = 1 - efficiency
     return Finding(
         code="low_flow_efficiency",
-        severity=(
-            Severity.ACT if efficiency < t.critical_flow_efficiency else Severity.WATCH
-        ),
+        severity=(Severity.ACT if efficiency < t.critical_flow_efficiency else Severity.WATCH),
         title=f"Задачи ждут {_pct(queue_share)} времени",
         detail=(
             f"Активная работа занимает лишь {_pct(efficiency)} от времени жизни задачи. "
@@ -225,6 +229,68 @@ def _rule_blocked_time(*, flow, t, **_) -> Finding | None:
             "это системная зависимость, а не случайность."
         ),
         evidence={"blocked_share": round(share, 3), "median_block_s": median},
+    )
+
+
+def _rule_blocker_pareto(*, blockers, **_) -> Finding | None:
+    """Потери от блокировок сосредоточены в двух-трёх причинах."""
+    rows = [r for r in blockers.get("pareto", []) if r["reason"] != "unknown"]
+    if len(rows) < 2 or blockers.get("lost_business_s", 0) <= 0:
+        return None
+
+    # сколько причин набирают 80% потерь: если мало — есть чёткая цель
+    head: list[dict[str, Any]] = []
+    for row in rows:
+        head.append(row)
+        if row["cumulative_share"] >= 0.8:
+            break
+    if len(head) > 3:
+        return None
+
+    names = ", ".join(str(r["label"]).lower() for r in head)
+    share = head[-1]["cumulative_share"]
+    lost = sum(int(r["business_s"]) for r in head)
+
+    return Finding(
+        code="blocker_pareto",
+        severity=Severity.WATCH,
+        title=f"{_pct(share)} потерь от блокировок дают {len(head)} причины",
+        detail=(
+            f"Это {names}. Суммарно {_hours(lost)} простоя за период — "
+            "остальные причины на их фоне почти не влияют."
+        ),
+        suggestion=(
+            "Разбор одной верхней причины окупается больше, чем любые попытки "
+            "ускорить саму работу: время теряется в ожидании, а не в разработке."
+        ),
+        evidence={
+            "top_reasons": [r["reason"] for r in head],
+            "covered_share": round(float(share), 3),
+            "lost_business_s": lost,
+        },
+    )
+
+
+def _rule_blocker_reasons_missing(*, blockers, t, **_) -> Finding | None:
+    """Причины блокировок не заполняются, и Парето построить не из чего."""
+    unknown = blockers.get("unknown_share", 0.0)
+    if not blockers.get("episodes") or unknown < t.unknown_blocker_share:
+        return None
+
+    return Finding(
+        code="blocker_reasons_missing",
+        severity=Severity.WATCH,
+        title=f"У {_pct(unknown)} блокировок не указана причина",
+        detail=(
+            "Длительность известна, а причина — нет. Такие потери нельзя "
+            "сгруппировать, и разбор блокировок опирается на догадки."
+        ),
+        suggestion=(
+            "Договориться заполнять причину при постановке флага. "
+            "Пока доля высока, разбивка по причинам описывает дисциплину "
+            "заполнения, а не реальные помехи."
+        ),
+        evidence={"unknown_share": round(float(unknown), 3)},
     )
 
 

@@ -349,3 +349,15 @@ def test_date_range_filter(client) -> None:
     data = client.get(f"/api/summary?date_from={recent.isoformat()}").json()
     everything = client.get("/api/summary").json()
     assert data["total_tickets"] < everything["total_tickets"]
+
+
+def test_blockers_endpoint(client) -> None:
+    data = client.get("/api/blockers").json()
+    assert "pareto" in data
+    assert "blocked_rate" in data
+    assert "current" in data
+
+
+def test_blockers_endpoint_respects_filters(client) -> None:
+    data = client.get("/api/blockers", params={"issue_types": "Bug"}).json()
+    assert data["tickets"] >= data["blocked_tickets"]

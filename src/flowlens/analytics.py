@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from sqlalchemy import Engine, text
 
+from flowlens.core.blockers import LABELS, UNKNOWN, BlockerEpisode, pareto
 from flowlens.core.calendar import calendar_from_row
 
 TimeUnit = Literal["business", "calendar"]
@@ -489,6 +490,97 @@ def flow_efficiency(engine: Engine, filters: Filters) -> dict[str, Any]:
             }
             for p in phases
         ],
+    }
+
+
+# --- блокировки --------------------------------------------------------------
+
+
+def blockers(engine: Engine, filters: Filters) -> dict[str, Any]:
+    """Три разных вопроса о блокировках, которые обычно смешивают в один.
+
+    Вероятность (какая доля задач вообще блокируется), потери (сколько времени
+    это стоит) и текущее состояние (что висит прямо сейчас) ведут к разным
+    решениям: частые короткие блокировки — процессная проблема, редкие долгие —
+    структурная. Разбивка потерь по причинам показывает, за что браться первым.
+    """
+    params: dict[str, Any] = {}
+    conditions = _ticket_conditions(filters, params)
+
+    episodes_query = f"""
+        SELECT ti.blocker_reason AS reason,
+               CAST(COALESCE(ti.duration_business_s, 0) AS bigint) AS business_s,
+               CAST(COALESCE(ti.duration_calendar_s, 0) AS bigint) AS calendar_s
+        FROM ticket_interval ti
+        JOIN ticket t ON t.id = ti.ticket_id
+        {_where([*conditions, "ti.is_blocked", "ti.ended_at IS NOT NULL"])}
+    """
+    rate_query = f"""
+        SELECT count(DISTINCT t.id) AS total,
+               count(DISTINCT t.id) FILTER (WHERE b.ticket_id IS NOT NULL) AS blocked
+        FROM ticket t
+        LEFT JOIN (
+            SELECT DISTINCT ticket_id FROM ticket_interval WHERE is_blocked
+        ) b ON b.ticket_id = t.id
+        {_where(conditions)}
+    """
+    current_query = f"""
+        SELECT t.external_key, t.summary, t.issue_type,
+               ti.blocker_reason AS reason,
+               ti.started_at,
+               {filters.duration_column()} AS age_s,
+               p.display_name AS assignee
+        FROM ticket_interval ti
+        JOIN ticket t ON t.id = ti.ticket_id
+        LEFT JOIN person p ON p.id = ti.assignee_id
+        {_where([*conditions, "ti.is_blocked", "ti.ended_at IS NULL"])}
+        ORDER BY age_s DESC NULLS LAST
+    """
+
+    with engine.begin() as conn:
+        episode_rows = conn.execute(text(episodes_query), params).all()
+        rate = conn.execute(text(rate_query), params).one()
+        current = conn.execute(text(current_query), params).all()
+
+    episodes = [
+        BlockerEpisode(
+            reason=r.reason or UNKNOWN,
+            business_s=r.business_s,
+            calendar_s=r.calendar_s,
+        )
+        for r in episode_rows
+    ]
+    rows = pareto(episodes)
+    total_lost = sum(e.business_s for e in episodes)
+    unknown_share = next(
+        (row["share"] for row in rows if row["reason"] == UNKNOWN),
+        0.0,
+    )
+
+    return {
+        "tickets": rate.total or 0,
+        "blocked_tickets": rate.blocked or 0,
+        "blocked_rate": round((rate.blocked or 0) / rate.total, 4) if rate.total else None,
+        "episodes": len(episodes),
+        "lost_business_s": total_lost,
+        "pareto": rows,
+        # доля потерь без указанной причины: пока она велика, Парето
+        # описывает не реальность, а дисциплину заполнения флага
+        "unknown_share": unknown_share,
+        "current": [
+            {
+                "key": r.external_key,
+                "summary": r.summary,
+                "type": r.issue_type,
+                "reason": r.reason or UNKNOWN,
+                "label": LABELS.get(r.reason or UNKNOWN, r.reason),
+                "since": r.started_at.isoformat(),
+                "age_s": r.age_s or 0,
+                "assignee": r.assignee,
+            }
+            for r in current
+        ],
+        "unit": filters.unit,
     }
 
 

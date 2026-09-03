@@ -13,6 +13,7 @@ from flowlens.analytics import (
     arrival_vs_throughput,
     arrivals_by_weekday,
     average_wip,
+    blockers,
     cumulative_flow,
     cycle_time_distribution,
     flow_efficiency,
@@ -382,3 +383,40 @@ def test_arrivals_by_weekday_excludes_weekends(data) -> None:
     workday_total = sum(sum(v) for w, v in arrivals.items() if w < 5)
     weekend_total = sum(sum(v) for w, v in arrivals.items() if w >= 5)
     assert workday_total > weekend_total
+
+
+# --- блокировки --------------------------------------------------------------
+
+
+def test_blockers_rate_within_bounds(data) -> None:
+    result = blockers(data, Filters())
+    assert 0 <= result["blocked_rate"] <= 1
+    assert result["blocked_tickets"] <= result["tickets"]
+
+
+def test_blockers_pareto_is_ordered_and_complete(data) -> None:
+    """Бары идут по убыванию, накопленная доля доходит до единицы."""
+    rows = blockers(data, Filters())["pareto"]
+    assert rows, "в демо-данных должны быть блокировки"
+    losses = [r["business_s"] for r in rows]
+    assert losses == sorted(losses, reverse=True)
+    assert rows[-1]["cumulative_share"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_blockers_pareto_totals_match_sum(data) -> None:
+    result = blockers(data, Filters())
+    assert sum(r["business_s"] for r in result["pareto"]) == result["lost_business_s"]
+
+
+def test_blockers_reasons_are_classified(data) -> None:
+    """Причины должны распознаваться, а не сваливаться в unknown."""
+    result = blockers(data, Filters())
+    assert result["unknown_share"] < 0.5
+
+
+def test_blockers_current_are_open(data) -> None:
+    """В списке текущих блокировок только незакрытые интервалы."""
+    result = blockers(data, Filters())
+    for item in result["current"]:
+        assert item["age_s"] >= 0
+        assert item["reason"]

@@ -120,6 +120,12 @@ def get_flow_efficiency(engine: EngineDep, filters: FiltersDep) -> dict[str, Any
     return analytics.flow_efficiency(engine, filters)
 
 
+@app.get("/api/blockers")
+def get_blockers(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Блокировки: вероятность, потери по причинам, что висит сейчас."""
+    return analytics.blockers(engine, filters)
+
+
 @app.get("/api/people")
 def get_people(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     """Распределение нагрузки между людьми."""
@@ -170,6 +176,7 @@ def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
         arrival=analytics.arrival_vs_throughput(engine, filters),
         aging=analytics.aging_wip(engine, filters),
         people=analytics.people_load(engine, filters),
+        blockers=analytics.blockers(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days

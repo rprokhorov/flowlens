@@ -344,6 +344,7 @@ def advice(
         arrival=analytics.arrival_vs_throughput(engine, filters),
         aging=analytics.aging_wip(engine, filters),
         people=analytics.people_load(engine, filters),
+        blockers=analytics.blockers(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days

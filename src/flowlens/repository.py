@@ -267,10 +267,11 @@ def save_intervals(
             conn.execute(
                 text(
                     "INSERT INTO ticket_interval (ticket_id, seq, status_id, phase, assignee_id, "
-                    "  is_blocked, blocked_from_status_id, started_at, ended_at, "
+                    "  is_blocked, blocked_from_status_id, blocker_reason, "
+                    "  started_at, ended_at, "
                     "  duration_calendar_s, duration_business_s, calendar_id) "
                     "VALUES (:tid, :seq, :status, CAST(:phase AS canonical_phase), :assignee, "
-                    "        :blocked, :from_st, :start, :end, :cal_s, :bus_s, :cal_id)"
+                    "        :blocked, :from_st, :reason, :start, :end, :cal_s, :bus_s, :cal_id)"
                 ),
                 {
                     "tid": ticket_id,
@@ -284,6 +285,7 @@ def save_intervals(
                         if iv.blocked_from_status
                         else None
                     ),
+                    "reason": iv.blocker_reason,
                     "start": iv.started_at,
                     "end": iv.ended_at,
                     "cal_s": iv.duration_calendar_s,

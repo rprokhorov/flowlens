@@ -58,6 +58,30 @@ def inputs(**overrides):
             ]
         },
         "quality": {"trustworthy_pct": 90.0, "anomalies": []},
+        "blockers": {
+            "episodes": 12,
+            "lost_business_s": 40 * HOUR,
+            "unknown_share": 0.05,
+            # потери размазаны по многим причинам: чёткой цели для разбора нет
+            "pareto": [
+                {"reason": "waiting_team", "label": "Ждём смежную команду",
+                 "business_s": 10 * HOUR, "episodes": 3,
+                 "share": 0.25, "cumulative_share": 0.25},
+                {"reason": "environment", "label": "Окружение и доступы",
+                 "business_s": 9 * HOUR, "episodes": 3,
+                 "share": 0.225, "cumulative_share": 0.475},
+                {"reason": "requirements", "label": "Требования не готовы",
+                 "business_s": 8 * HOUR, "episodes": 2,
+                 "share": 0.2, "cumulative_share": 0.675},
+                {"reason": "waiting_review", "label": "Ждём ревью",
+                 "business_s": 7 * HOUR, "episodes": 2,
+                 "share": 0.175, "cumulative_share": 0.85},
+                {"reason": "defect", "label": "Дефект в смежном коде",
+                 "business_s": 6 * HOUR, "episodes": 2,
+                 "share": 0.15, "cumulative_share": 1.0},
+            ],
+            "current": [],
+        },
     }
     base.update(overrides)
     return base
@@ -335,3 +359,125 @@ def test_empty_inputs_do_not_crash() -> None:
         quality={"trustworthy_pct": 100.0, "anomalies": []},
     )
     assert findings == []
+
+
+# --- блокировки --------------------------------------------------------------
+
+
+def test_blocker_pareto_flagged_when_few_reasons_dominate() -> None:
+    """Если 80% потерь дают две причины, есть чёткая цель для разбора."""
+    findings = analyse(
+        **inputs(
+            blockers={
+                "episodes": 20,
+                "lost_business_s": 100 * HOUR,
+                "unknown_share": 0.0,
+                "pareto": [
+                    {
+                        "reason": "waiting_team",
+                        "label": "Ждём смежную команду",
+                        "business_s": 60 * HOUR,
+                        "episodes": 10,
+                        "share": 0.6,
+                        "cumulative_share": 0.6,
+                    },
+                    {
+                        "reason": "environment",
+                        "label": "Окружение и доступы",
+                        "business_s": 25 * HOUR,
+                        "episodes": 6,
+                        "share": 0.25,
+                        "cumulative_share": 0.85,
+                    },
+                    {
+                        "reason": "defect",
+                        "label": "Дефект в смежном коде",
+                        "business_s": 15 * HOUR,
+                        "episodes": 4,
+                        "share": 0.15,
+                        "cumulative_share": 1.0,
+                    },
+                ],
+                "current": [],
+            }
+        )
+    )
+    finding = next(f for f in findings if f.code == "blocker_pareto")
+    assert finding.evidence["top_reasons"] == ["waiting_team", "environment"]
+    assert "смежную команду" in finding.detail
+
+
+def test_blocker_pareto_silent_when_losses_are_spread() -> None:
+    """Когда причин много и все мелкие, указывать не на что."""
+    assert "blocker_pareto" not in codes(analyse(**inputs()))
+
+
+def test_blocker_pareto_ignores_unknown_reason() -> None:
+    """Неуказанная причина не может быть целью для разбора."""
+    findings = analyse(
+        **inputs(
+            blockers={
+                "episodes": 10,
+                "lost_business_s": 100 * HOUR,
+                "unknown_share": 0.7,
+                "pareto": [
+                    {
+                        "reason": "unknown",
+                        "label": "Причина не указана",
+                        "business_s": 70 * HOUR,
+                        "episodes": 7,
+                        "share": 0.7,
+                        "cumulative_share": 0.7,
+                    },
+                    {
+                        "reason": "environment",
+                        "label": "Окружение и доступы",
+                        "business_s": 30 * HOUR,
+                        "episodes": 3,
+                        "share": 0.3,
+                        "cumulative_share": 1.0,
+                    },
+                ],
+                "current": [],
+            }
+        )
+    )
+    assert "blocker_pareto" not in codes(findings)
+
+
+def test_blocker_reasons_missing_flagged() -> None:
+    """Высокая доля блокировок без причины делает разбивку недостоверной."""
+    findings = analyse(
+        **inputs(
+            blockers={
+                "episodes": 10,
+                "lost_business_s": 100 * HOUR,
+                "unknown_share": 0.7,
+                "pareto": [],
+                "current": [],
+            }
+        )
+    )
+    finding = next(f for f in findings if f.code == "blocker_reasons_missing")
+    assert finding.evidence["unknown_share"] == 0.7
+
+
+def test_blocker_reasons_missing_silent_when_filled() -> None:
+    assert "blocker_reasons_missing" not in codes(analyse(**inputs()))
+
+
+def test_blocker_rules_silent_without_episodes() -> None:
+    """Нет блокировок — нечего и разбирать."""
+    findings = analyse(
+        **inputs(
+            blockers={
+                "episodes": 0,
+                "lost_business_s": 0,
+                "unknown_share": 0.0,
+                "pareto": [],
+                "current": [],
+            }
+        )
+    )
+    assert "blocker_pareto" not in codes(findings)
+    assert "blocker_reasons_missing" not in codes(findings)

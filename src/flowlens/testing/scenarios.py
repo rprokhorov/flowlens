@@ -42,9 +42,11 @@ def with_blocking(cal: WorkCalendar, key: str = "DEMO-2") -> TicketSeed:
     b.stay(HOUR)
     b.assign("ivan").move_to("in progress")
     b.stay(WORKDAY)
+    b.flag("Ждём смежную команду по интеграции")
     b.move_to("blocked/hold")
     b.stay(3 * WORKDAY)  # ждали внешнюю команду
     b.move_to("in progress")
+    b.flag(None)
     b.stay(4 * HOUR)
     b.move_to("qa")
     b.stay(2 * HOUR)
@@ -185,6 +187,25 @@ def _weighted(rng: random.Random, options: tuple[tuple[str, float], ...]) -> str
     return rng.choices([o[0] for o in options], weights=[o[1] for o in options])[0]
 
 
+# Тексты причин — такие же свободные, как в Jira: категорию из них выводит
+# core.blockers. Вес отражает типичную картину: доминируют две-три причины,
+# и заметная доля блокировок остаётся без пояснения вовсе.
+_BLOCKER_REASONS: tuple[tuple[str, float], ...] = (
+    ("Ждём смежную команду", 26),
+    ("Ждём ответа заказчика", 18),
+    ("Стенд недоступен, нет доступа к окружению", 14),
+    ("Требования не уточнены, ждём аналитика", 11),
+    ("Зависимость от другой задачи", 9),
+    ("Ждём ревью от архитектора", 7),
+    ("Баг в смежном сервисе", 5),
+    ("", 10),
+)
+
+
+def _blocker_reason(rng: random.Random) -> str | None:
+    return _weighted(rng, _BLOCKER_REASONS) or None
+
+
 def random_ticket(
     cal: WorkCalendar,
     key: str,
@@ -201,8 +222,10 @@ def random_ticket(
     `horizon` — «сейчас»: тикет не может продвинуться дальше этого момента,
     иначе недавно созданные задачи уезжали бы в будущее.
     """
+
     def past_horizon() -> bool:
         return b.past_horizon()
+
     issue_type = _weighted(rng, TYPES)
     priority = _weighted(rng, PRIORITIES)
     dev = rng.choice(PEOPLE)
@@ -234,9 +257,13 @@ def random_ticket(
         return b.build(scenario="random_open", summary=f"{issue_type} {key}")
 
     if rng.random() < 0.22:  # блокировка
+        # причины распределены неравномерно: в реальности две-три доминируют,
+        # а часть блокировок ставят вообще без пояснения
+        b.flag(_blocker_reason(rng))
         b.move_to("blocked/hold")
         b.stay(int(rng.expovariate(1 / (2 * WORKDAY))))
         b.move_to("in progress")
+        b.flag(None)
         b.stay(max(HOUR, work // 3))
 
     b.move_to("qa").assign(qa_person)

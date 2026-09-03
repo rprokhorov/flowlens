@@ -260,6 +260,7 @@ CREATE TABLE ticket_interval (
     assignee_id    bigint      REFERENCES person(id),
     is_blocked     boolean     NOT NULL DEFAULT false,
     blocked_from_status_id bigint REFERENCES workflow_status(id),  -- откуда ушли в блок
+    blocker_reason text,                       -- категория причины (core/blockers.py)
     started_at     timestamptz NOT NULL,
     ended_at       timestamptz,               -- NULL = длится сейчас
     duration_calendar_s bigint,
@@ -273,6 +274,7 @@ CREATE INDEX ti_status_time_idx   ON ticket_interval (status_id, started_at, end
 CREATE INDEX ti_assignee_time_idx ON ticket_interval (assignee_id, started_at, ended_at);
 CREATE INDEX ti_open_idx          ON ticket_interval (phase, started_at) WHERE ended_at IS NULL;
 CREATE INDEX ti_range_idx         ON ticket_interval USING gist (tstzrange(started_at, ended_at));
+CREATE INDEX ti_blocker_reason_idx ON ticket_interval (blocker_reason) WHERE blocker_reason IS NOT NULL;
 
 -- ---------------------------------------------------------------------
 -- METRICS СЛОЙ

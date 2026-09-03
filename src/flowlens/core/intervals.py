@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from flowlens.core.blockers import classify, clean_reason_text
 from flowlens.core.calendar import WorkCalendar
 from flowlens.core.domain import BOARD_BY_NAME, Event, EventKind, Phase
 
@@ -24,6 +25,7 @@ class Interval:
     assignee: str | None
     is_blocked: bool
     blocked_from_status: str | None
+    blocker_reason: str | None
     started_at: datetime
     ended_at: datetime | None
     duration_calendar_s: int | None
@@ -60,6 +62,7 @@ def build_intervals(
     status = initial_status
     assignee: str | None = None
     blocked_from: str | None = None
+    blocker_reason: str | None = None
     started = created.occurred_at
 
     intervals: list[Interval] = []
@@ -76,6 +79,7 @@ def build_intervals(
                 status=status,
                 assignee=assignee,
                 blocked_from=blocked_from,
+                blocker_reason=blocker_reason,
                 started_at=started,
                 ended_at=at,
                 calendar=calendar,
@@ -95,11 +99,16 @@ def build_intervals(
                 blocked_from = previous if not _is_blocked(previous) else blocked_from
             else:
                 blocked_from = None
+                blocker_reason = None
         elif ev.kind == EventKind.ASSIGNEE_CHANGE:
             if ev.new_value == assignee:
                 continue
             close(ev.occurred_at)
             assignee = ev.new_value
+        elif ev.kind == EventKind.FLAG_CHANGE:
+            # Флаг несёт причину свободным текстом. Снятие флага (пустое значение)
+            # причину сбрасывает; интервал при этом не рвётся — статус тот же.
+            blocker_reason = classify(clean_reason_text(ev.new_value)) if ev.new_value else None
 
     # финальный интервал
     seq += 1
@@ -110,6 +119,7 @@ def build_intervals(
             status=status,
             assignee=assignee,
             blocked_from=blocked_from,
+            blocker_reason=blocker_reason,
             started_at=started,
             ended_at=None if not is_terminal else None,
             calendar=calendar,
@@ -144,6 +154,7 @@ def _make_interval(
     status: str,
     assignee: str | None,
     blocked_from: str | None,
+    blocker_reason: str | None,
     started_at: datetime,
     ended_at: datetime | None,
     calendar: WorkCalendar,
@@ -172,6 +183,7 @@ def _make_interval(
         assignee=assignee,
         is_blocked=blocked,
         blocked_from_status=blocked_from if blocked else None,
+        blocker_reason=blocker_reason if blocked else None,
         started_at=started_at,
         ended_at=ended_at,
         duration_calendar_s=cal_s,
