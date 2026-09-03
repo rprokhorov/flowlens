@@ -22,6 +22,8 @@
     <button class="tab" data-tab="cycle">Время цикла</button>
     <button class="tab" data-tab="phases">Где время</button>
     <button class="tab" data-tab="wip">Незавершённое</button>
+    <button class="tab" data-tab="blockers">Блокировки</button>
+    <button class="tab" data-tab="sle">Обещания</button>
     <button class="tab" data-tab="people">Нагрузка</button>
     <button class="tab" data-tab="forecast">Прогноз</button>
     <button class="tab" data-tab="quality">Качество данных</button>
@@ -89,6 +91,24 @@
          Разрыв между линиями накапливается, даже когда каждая задача делается быстро.</p>
       <div class="chart" id="chart-arrival"></div>
     </div>
+
+    <div class="card">
+      <h2>Накопленный разрыв</h2>
+      <p class="hint">Недельные колебания взаимно гасятся, а устойчивый тренд остаётся.
+         Линия, уходящая вверх, означает, что очередь набирается системно,
+         а не разово — это видно раньше, чем испортятся сроки.</p>
+      <div class="chart" id="chart-net-flow"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Очередь в бэклоге</h2>
+        <button class="ghost" data-data-for="backlog">Данные</button>
+      </div>
+      <p class="hint" id="backlog-hint"></p>
+      <div class="chart" id="chart-backlog"></div>
+      <div class="scroll" id="backlog-oldest"></div>
+    </div>
   </section>
 
   <!-- ВРЕМЯ ЦИКЛА -->
@@ -128,6 +148,86 @@
       <p class="hint">Эффективность потока — доля времени, когда над задачей
          действительно работали.</p>
       <div class="chart" id="chart-efficiency"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Скрытая очередь</h2>
+        <button class="ghost" data-data-for="hidden">Данные</button>
+      </div>
+      <p class="hint" id="hidden-hint"></p>
+      <div class="chart short" id="chart-hidden"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Переходы между статусами</h2>
+        <button class="ghost" data-data-for="transitions">Данные</button>
+      </div>
+      <p class="hint" id="transitions-hint"></p>
+      <div class="chart tall" id="chart-transitions"></div>
+    </div>
+  </section>
+
+  <!-- БЛОКИРОВКИ -->
+  <section class="panel" data-panel="blockers">
+    <div class="tiles" id="blocker-tiles"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Потери по причинам</h2>
+        <button class="ghost" data-data-for="blockers">Данные</button>
+      </div>
+      <p class="hint">Бары — потери времени, линия — накопленная доля.
+         Обычно две-три причины дают 80% простоя: разбор верхней из них
+         окупается больше, чем попытки ускорить саму работу.</p>
+      <div class="chart tall" id="chart-blockers"></div>
+    </div>
+
+    <div class="card">
+      <h2>Заблокировано сейчас</h2>
+      <p class="hint">Отсортировано по длительности. Это список для стендапа.</p>
+      <div class="scroll"><table id="table-blocked">
+        <thead><tr>
+          <th>Задача</th><th>Причина</th><th>Исполнитель</th>
+          <th class="num">Висит</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- ОБЕЩАНИЯ -->
+  <section class="panel" data-panel="sle">
+    <div class="card">
+      <div class="card-head">
+        <h2>Действующие обещания</h2>
+        <button id="sle-fix-btn" class="ghost">Зафиксировать по текущим данным</button>
+      </div>
+      <p class="hint">SLE — вероятностное обещание: «85% таких задач мы делаем
+         за N дней». Оно честнее дедлайна, потому что признаёт разброс,
+         и полезнее, потому что проверяемо. Пока обещание не зафиксировано,
+         порог всегда равен факту, и сказать «не уложились» нельзя.</p>
+      <div id="sle-promises"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Попадание в обещание</h2>
+        <button class="ghost" data-data-for="sle">Данные</button>
+      </div>
+      <p class="hint" id="sle-hint"></p>
+      <div class="chart" id="chart-sle"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Классы обслуживания</h2>
+        <button class="ghost" data-data-for="classes">Данные</button>
+      </div>
+      <p class="hint" id="classes-hint"></p>
+      <div class="chart" id="chart-expedite"></div>
+      <div id="classes-mix" class="stat-row"></div>
     </div>
   </section>
 

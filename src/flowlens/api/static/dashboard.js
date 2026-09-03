@@ -55,6 +55,14 @@ function hours(seconds) {
 function percent(value) {
   return value == null ? '—' : `${(value * 100).toFixed(0)}%`;
 }
+// Возраст в очереди идёт по календарю: задача ждёт и в выходные. Пропускать его
+// через hours() нельзя — там рабочий день в 9 часов, и 28 суток превращаются в 75.
+function calendarDays(seconds) {
+  if (seconds == null) return '—';
+  const days = seconds / 86400;
+  if (days < 1) return `${Math.round(seconds / 3600)} ч`;
+  return days < 10 ? `${days.toFixed(1)} дн` : `${Math.round(days)} дн`;
+}
 function plural(n, one, few, many) {
   const mod10 = n % 10, mod100 = n % 100;
   if (mod10 === 1 && mod100 !== 11) return one;
@@ -282,13 +290,96 @@ function renderArrival(data) {
   }, true);
 }
 
+function renderNetFlow(data) {
+  const chart = ensureChart('chart-net-flow');
+  if (!chart) return;
+  if (!data.periods.length) return emptyChart(chart, 'Нет данных за период');
+
+  const cumulative = data.backlog_delta || [];
+  chart.setOption({
+    ...baseOption(),
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis',
+      formatter: params => {
+        const index = params[0].dataIndex;
+        const net = data.net_per_period[index];
+        return `${formatDay(data.periods[index])}<br>`
+          + `за период: ${net > 0 ? '+' : ''}${net}<br>`
+          + `накопленно: ${params[0].value > 0 ? '+' : ''}${params[0].value}`;
+      },
+    },
+    xAxis: { type: 'category', data: data.periods.map(formatDay), ...axisStyle() },
+    yAxis: { type: 'value', ...axisStyle() },
+    series: [{
+      type: 'line', smooth: false, symbolSize: 4,
+      data: cumulative,
+      lineStyle: { color: css('--series-8'), width: 2 },
+      itemStyle: { color: css('--series-8') },
+      areaStyle: { opacity: 0.1, color: css('--series-8') },
+      markLine: {
+        silent: true, symbol: 'none',
+        data: [{ yAxis: 0, lineStyle: { color: css('--border') } }],
+      },
+    }],
+  }, true);
+}
+
+function renderBacklog(data) {
+  const chart = ensureChart('chart-backlog');
+  const hint = document.getElementById('backlog-hint');
+  if (!chart) return;
+
+  if (hint) {
+    const stale = data.histogram.slice(2).reduce((sum, bucket) => sum + bucket.count, 0);
+    hint.textContent = `В очереди ${data.size} `
+      + `${plural(data.size, 'задача', 'задачи', 'задач')}, половина ждёт дольше `
+      + `${calendarDays(data.p50_age_s)}.`
+      + (stale ? ` Старше трёх месяцев — ${stale}: такие задачи обычно не делаются `
+        + 'никогда и только зашумляют приоритизацию.' : '');
+  }
+  if (!data.size) return emptyChart(chart, 'Очередь пуста');
+
+  chart.setOption({
+    ...baseOption(),
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: params => `${params[0].name}: ${params[0].value} `
+        + `${plural(params[0].value, 'задача', 'задачи', 'задач')}`,
+    },
+    xAxis: { type: 'category', data: data.histogram.map(bucket => bucket.label), ...axisStyle() },
+    yAxis: { type: 'value', ...axisStyle() },
+    series: [{
+      type: 'bar', barMaxWidth: 64,
+      data: data.histogram.map((bucket, index) => ({
+        value: bucket.count,
+        itemStyle: { color: index >= 2 ? css('--status-warning') : css('--series-1') },
+      })),
+    }],
+  }, true);
+
+  const oldest = document.getElementById('backlog-oldest');
+  if (oldest) {
+    oldest.innerHTML = data.oldest.length ? `<table>
+      <thead><tr><th>Задача</th><th>Тип</th><th class="num">Ждёт</th></tr></thead>
+      <tbody>${data.oldest.map(item => `
+        <tr>
+          <td><span class="key-link" data-ticket="${escapeHtml(item.key)}">${escapeHtml(item.key)}</span></td>
+          <td>${escapeHtml(item.type)}</td>
+          <td class="num">${calendarDays(item.age_s)}</td>
+        </tr>`).join('')}</tbody></table>` : '';
+  }
+}
+
 async function loadFlow() {
-  const [cfd, arrival] = await Promise.all([
+  const [cfd, arrival, backlog] = await Promise.all([
     fetchJson('/api/cfd'),
     fetchJson('/api/arrival-throughput', { granularity: 'week' }),
+    fetchJson('/api/backlog'),
   ]);
   renderCfd(cfd);
   renderArrival(arrival);
+  renderNetFlow(arrival);
+  renderBacklog(backlog);
 }
 
 // ============================================================================
@@ -456,10 +547,113 @@ function renderEfficiency(data) {
   }, true);
 }
 
+function renderHiddenQueue(data) {
+  const chart = ensureChart('chart-hidden');
+  const hint = document.getElementById('hidden-hint');
+  if (!chart) return;
+
+  const phases = (data.by_phase || []).filter(item => item.total_s > 0);
+  if (!phases.length) return emptyChart(chart, 'Нет завершённых интервалов за период');
+
+  const worst = phases.reduce((a, b) => (a.waiting_s > b.waiting_s ? a : b));
+  if (hint) {
+    hint.textContent = worst.share >= 0.2
+      ? `В статусе «${PHASE_LABEL[worst.phase] || worst.phase}» ${percent(worst.share)} времени — `
+        + 'ожидание: задача уже там, но её ещё никто не взял. Это время считается работой '
+        + 'и завышает эффективность потока.'
+      : 'Задачи почти сразу попадают к исполнителю. Ожидание внутри активных статусов невелико.';
+  }
+
+  chart.setOption({
+    ...baseOption(),
+    legend: { ...baseOption().legend, data: ['Работали', 'Ждали исполнителя'] },
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: params => {
+        const item = phases[params[0].dataIndex];
+        return `<b>${PHASE_LABEL[item.phase] || item.phase}</b><br>`
+          + `работали: ${hours(item.total_s - item.waiting_s)}<br>`
+          + `ждали: ${hours(item.waiting_s)} (${percent(item.share)})`;
+      },
+    },
+    xAxis: { type: 'value', ...axisStyle(),
+      axisLabel: { ...axisStyle().axisLabel, formatter: value => hours(value) } },
+    yAxis: { type: 'category', ...axisStyle(),
+      data: phases.map(item => PHASE_LABEL[item.phase] || item.phase) },
+    series: [
+      { name: 'Работали', type: 'bar', stack: 'time', barMaxWidth: 34,
+        data: phases.map(item => item.total_s - item.waiting_s),
+        itemStyle: { color: css('--series-1') } },
+      { name: 'Ждали исполнителя', type: 'bar', stack: 'time', barMaxWidth: 34,
+        data: phases.map(item => item.waiting_s),
+        itemStyle: { color: css('--status-warning') } },
+    ],
+  }, true);
+}
+
+function renderTransitions(data) {
+  const chart = ensureChart('chart-transitions');
+  const hint = document.getElementById('transitions-hint');
+  if (!chart) return;
+
+  if (!data.cells.length) return emptyChart(chart, 'Нет переходов за период');
+  if (hint) {
+    hint.textContent = `Возвраты — ${percent(data.backflow_rate)} всех переходов. `
+      + 'Задача, дважды вернувшаяся из проверки, проходит ожидание трижды; '
+      + 'в отчётах это выглядит как «долгое ревью», хотя причина — качество на входе.';
+  }
+
+  const statuses = [...new Set(data.cells.flatMap(cell => [cell.from, cell.to]))];
+  const index = new Map(statuses.map((name, i) => [name, i]));
+  const points = data.cells.map(cell => ({
+    value: [index.get(cell.to), index.get(cell.from), cell.moves],
+    is_backflow: cell.is_backflow,
+  }));
+  const maxMoves = Math.max(...data.cells.map(cell => cell.moves));
+
+  chart.setOption({
+    ...baseOption(),
+    grid: { left: 8, right: 24, top: 40, bottom: 42, containLabel: true },
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'item',
+      formatter: params => `${escapeHtml(statuses[params.value[1]])} → `
+        + `${escapeHtml(statuses[params.value[0]])}<br>переходов: ${params.value[2]}`
+        + (params.data.is_backflow ? '<br><b>возврат</b>' : ''),
+    },
+    xAxis: { type: 'category', data: statuses, name: 'куда',
+      nameLocation: 'middle', nameGap: 58,
+      nameTextStyle: { color: css('--text-muted'), fontSize: 11 }, ...axisStyle(),
+      splitLine: { show: true, lineStyle: { color: css('--grid'), type: 'dashed' } },
+      axisLabel: { ...axisStyle().axisLabel, interval: 0, rotate: 20 } },
+    yAxis: { type: 'category', data: statuses, name: 'откуда',
+      nameTextStyle: { color: css('--text-muted'), fontSize: 11, align: 'right' }, ...axisStyle(),
+      splitLine: { show: true, lineStyle: { color: css('--grid'), type: 'dashed' } } },
+    series: [{
+      type: 'scatter',
+      symbolSize: point => 12 + 34 * Math.sqrt(point[2] / maxMoves),
+      data: points,
+      itemStyle: {
+        color: params => params.data.is_backflow ? css('--status-critical') : css('--series-1'),
+        opacity: 0.82,
+      },
+      label: {
+        show: true, formatter: params => params.value[2],
+        color: css('--text-primary'), fontSize: 10,
+      },
+    }],
+  }, true);
+}
+
 async function loadPhases() {
-  const data = await fetchJson('/api/flow-efficiency');
-  renderPhases(data);
-  renderEfficiency(data);
+  const [efficiency, hidden, transitions] = await Promise.all([
+    fetchJson('/api/flow-efficiency'),
+    fetchJson('/api/hidden-queue'),
+    fetchJson('/api/transitions'),
+  ]);
+  renderPhases(efficiency);
+  renderEfficiency(efficiency);
+  renderHiddenQueue(hidden);
+  renderTransitions(transitions);
 }
 
 // ============================================================================
@@ -553,6 +747,288 @@ function renderAging(data) {
 
 async function loadWip() {
   renderAging(await fetchJson('/api/aging-wip'));
+}
+
+// ============================================================================
+// Вкладка: блокировки
+// ============================================================================
+
+function renderBlockerTiles(data) {
+  const unknown = data.unknown_share || 0;
+  const tiles = [
+    { label: 'Задач блокировалось', value: percent(data.blocked_rate),
+      note: `${data.blocked_tickets} из ${data.tickets}` },
+    { label: 'Потеряно времени', value: hours(data.lost_business_s),
+      note: `${data.episodes} ${plural(data.episodes, 'эпизод', 'эпизода', 'эпизодов')}` },
+    { label: 'Заблокировано сейчас', value: data.current.length,
+      note: data.current.length ? 'требует внимания' : 'ничего не висит',
+      cls: data.current.length ? 'warning' : 'good' },
+    { label: 'Без указанной причины', value: percent(unknown),
+      note: unknown > 0.3 ? 'разбор опирается на догадки' : 'причины заполняются',
+      cls: unknown > 0.3 ? 'warning' : 'good' },
+  ];
+  document.getElementById('blocker-tiles').innerHTML = tiles.map(t => `
+    <div class="tile ${t.cls || ''}">
+      <div class="label">${t.label}</div>
+      <div class="value">${t.value}</div>
+      <div class="note">${t.note || ''}</div>
+    </div>`).join('');
+}
+
+function renderBlockerPareto(data) {
+  const chart = ensureChart('chart-blockers');
+  if (!chart) return;
+  if (!data.pareto.length) return emptyChart(chart, 'Блокировок за период не было');
+
+  const labels = data.pareto.map(r => r.label);
+  const losses = data.pareto.map(r => r.business_s);
+  const cumulative = data.pareto.map(r => +(r.cumulative_share * 100).toFixed(1));
+  // граница 80%: причины левее неё и есть то, чем стоит заняться
+  const headCount = data.pareto.findIndex(r => r.cumulative_share >= 0.8) + 1;
+
+  chart.setOption({
+    ...baseOption(),
+    grid: { left: 8, right: 52, top: 30, bottom: 34, containLabel: true },
+    legend: { ...baseOption().legend, data: ['Потери', 'Накопленная доля'] },
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: params => {
+        const index = params[0].dataIndex;
+        const row = data.pareto[index];
+        return `<b>${escapeHtml(row.label)}</b><br>`
+          + `потери: ${hours(row.business_s)} (${percent(row.share)})<br>`
+          + `эпизодов: ${row.episodes}<br>`
+          + `накопленно: ${percent(row.cumulative_share)}`;
+      },
+    },
+    xAxis: { type: 'category', data: labels, ...axisStyle(),
+      axisLabel: { ...axisStyle().axisLabel, interval: 0, rotate: 30,
+        width: 150, overflow: 'break', lineHeight: 13 } },
+    yAxis: [
+      { type: 'value', name: 'потери', ...axisStyle(),
+        axisLabel: { ...axisStyle().axisLabel, formatter: value => hours(value) } },
+      { type: 'value', name: '%', min: 0, max: 100, ...axisStyle(),
+        splitLine: { show: false },
+        axisLabel: { ...axisStyle().axisLabel, formatter: '{value}%' } },
+    ],
+    series: [
+      {
+        name: 'Потери', type: 'bar', data: losses.map((value, index) => ({
+          value,
+          itemStyle: { color: index < headCount ? css('--series-8') : css('--series-4') },
+        })),
+        barMaxWidth: 46,
+      },
+      {
+        name: 'Накопленная доля', type: 'line', yAxisIndex: 1, data: cumulative,
+        smooth: false, symbolSize: 6,
+        lineStyle: { color: css('--text-secondary'), width: 2 },
+        itemStyle: { color: css('--text-secondary') },
+        markLine: {
+          silent: true, symbol: 'none',
+          data: [{ yAxis: 80, lineStyle: { color: css('--status-warning'), type: 'dashed' },
+            label: { formatter: '80% потерь', position: 'insideEndTop',
+              color: css('--status-warning'), fontSize: 11 } }],
+        },
+      },
+    ],
+  }, true);
+}
+
+function renderBlockedNow(data) {
+  const body = document.querySelector('#table-blocked tbody');
+  if (!body) return;
+  if (!data.current.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">Сейчас ничего не заблокировано</td></tr>';
+    return;
+  }
+  body.innerHTML = data.current.map(item => `
+    <tr>
+      <td><span class="key-link" data-ticket="${escapeHtml(item.key)}">${escapeHtml(item.key)}</span></td>
+      <td>${escapeHtml(item.label || '—')}</td>
+      <td>${escapeHtml(item.assignee || '—')}</td>
+      <td class="num">${hours(item.age_s)}</td>
+      <td><span class="pill blocked">блок</span></td>
+    </tr>`).join('');
+}
+
+async function loadBlockers() {
+  const data = await fetchJson('/api/blockers');
+  renderBlockerTiles(data);
+  renderBlockerPareto(data);
+  renderBlockedNow(data);
+}
+
+// ============================================================================
+// Вкладка: обещания (SLE)
+// ============================================================================
+
+function renderPromises(data) {
+  const container = document.getElementById('sle-promises');
+  if (!container) return;
+  if (!data.promises.length) {
+    container.innerHTML = '<div class="no-findings">Обещаний пока нет. '
+      + 'Зафиксируйте текущий 85-й перцентиль — дальше по нему можно проверять себя.</div>';
+    return;
+  }
+  container.innerHTML = `<div class="scroll"><table>
+    <thead><tr>
+      <th>Класс</th><th class="num">Перцентиль</th><th class="num">Обещание</th>
+      <th class="num">Выборка</th><th>Зафиксировано</th>
+    </tr></thead>
+    <tbody>${data.promises.map(promise => `
+      <tr>
+        <td>${escapeHtml(promise.issue_type || 'все типы')}${
+          promise.priority ? ' · ' + escapeHtml(promise.priority) : ''}</td>
+        <td class="num">${promise.percentile}%</td>
+        <td class="num">${hours(promise.target_business_s)}</td>
+        <td class="num">${promise.sample_size}</td>
+        <td>${formatDay(promise.fixed_at)}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+}
+
+function renderSleAttainment(data) {
+  const chart = ensureChart('chart-sle');
+  const hint = document.getElementById('sle-hint');
+  if (!chart) return;
+
+  if (!data.periods.length) {
+    if (hint) hint.textContent = 'Зафиксируйте обещание, чтобы отслеживать попадание в него.';
+    return emptyChart(chart, 'Обещание не зафиксировано');
+  }
+
+  const target = data.target;
+  const values = data.attainment.map(value => value == null ? null : +(value * 100).toFixed(1));
+  const recent = data.attainment.filter(value => value != null).slice(-3);
+  const holding = recent.length && recent.every(value => value >= target - 0.05);
+  if (hint) {
+    hint.textContent = holding
+      ? `Обещание держится: попадание около цели в ${percent(target)}.`
+      : `Попадание ниже цели в ${percent(target)}. Либо система замедлилась, `
+        + 'либо обещание устарело — сравните с датой фиксации.';
+  }
+
+  chart.setOption({
+    ...baseOption(),
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis',
+      formatter: params => {
+        const index = params[0].dataIndex;
+        return `${formatDay(data.periods[index])}<br>`
+          + `попадание: ${params[0].value}%<br>`
+          + `уложились ${data.met[index]} из ${data.counts[index]}`
+          + (data.counts[index] < 10 ? '<br><i>выборка мала, доля недостоверна</i>' : '');
+      },
+    },
+    xAxis: { type: 'category', data: data.periods.map(formatDay), ...axisStyle() },
+    yAxis: { type: 'value', min: 0, max: 100, ...axisStyle(),
+      axisLabel: { ...axisStyle().axisLabel, formatter: '{value}%' } },
+    series: [{
+      type: 'bar', data: values.map((value, index) => ({
+        value,
+        // на выборке меньше десяти задач доля пляшет от одной задачи:
+        // показываем приглушённо, чтобы её не читали как тренд
+        itemStyle: {
+          color: value == null ? css('--series-4')
+            : value >= target * 100 - 5 ? css('--series-1') : css('--status-warning'),
+          opacity: data.counts[index] < 10 ? 0.35 : 1,
+        },
+      })),
+      barMaxWidth: 52,
+      markLine: {
+        silent: true, symbol: 'none',
+        data: [{ yAxis: +(target * 100).toFixed(0),
+          lineStyle: { color: css('--status-critical'), type: 'dashed' },
+          label: { formatter: `цель ${percent(target)}`, position: 'insideStartTop',
+            color: css('--status-critical'), fontSize: 11 } }],
+      },
+    }],
+  }, true);
+}
+
+function renderExpedite(data) {
+  const chart = ensureChart('chart-expedite');
+  const hint = document.getElementById('classes-hint');
+  if (!chart) return;
+
+  if (hint) {
+    hint.textContent = data.priority_devalued
+      ? `Срочных задач ${percent(data.overall_share)} — выше десятой части. `
+        + 'Когда срочно всё, не срочно ничто: приоритет перестал нести информацию.'
+      : `Срочных задач ${percent(data.overall_share)}. Устойчивый рост означает, `
+        + 'что система теряет управление приоритетами.';
+  }
+
+  const mix = document.getElementById('classes-mix');
+  if (mix) {
+    const total = data.by_class.reduce((sum, item) => sum + item.count, 0) || 1;
+    mix.innerHTML = data.by_class.map(item => `
+      <div class="stat">
+        <div class="stat-value">${item.count}</div>
+        <div class="stat-label">${escapeHtml(item.name)} · ${percent(item.count / total)}</div>
+      </div>`).join('');
+  }
+
+  if (!data.periods.length) return emptyChart(chart, 'Нет данных за период');
+
+  chart.setOption({
+    ...baseOption(),
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis',
+      formatter: params => `${formatDay(data.periods[params[0].dataIndex])}<br>`
+        + `срочных: ${params[0].value}%<br>`
+        + `всего задач: ${data.counts[params[0].dataIndex]}`,
+    },
+    xAxis: { type: 'category', data: data.periods.map(formatDay), ...axisStyle() },
+    yAxis: { type: 'value', ...axisStyle(),
+      axisLabel: { ...axisStyle().axisLabel, formatter: '{value}%' } },
+    series: [{
+      type: 'line', smooth: false, symbolSize: 5,
+      data: data.share.map(value => +(value * 100).toFixed(1)),
+      lineStyle: { color: css('--series-8'), width: 2 },
+      itemStyle: { color: css('--series-8') },
+      areaStyle: { opacity: 0.12, color: css('--series-8') },
+      markLine: {
+        silent: true, symbol: 'none',
+        data: [{ yAxis: 10, lineStyle: { color: css('--status-warning'), type: 'dashed' },
+          label: { formatter: 'граница 10%', position: 'insideStartTop',
+            color: css('--status-warning'), fontSize: 11 } }],
+      },
+    }],
+  }, true);
+}
+
+async function fixSle() {
+  const button = document.getElementById('sle-fix-btn');
+  const container = document.getElementById('sle-promises');
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Фиксирую…';
+
+  try {
+    const response = await fetch(`/api/sle?${filterParams()}&percentile=85`, { method: 'POST' });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      container.insertAdjacentHTML('afterbegin',
+        `<div class="error">${escapeHtml(error.detail || 'Не удалось зафиксировать обещание')}</div>`);
+      return;
+    }
+    loaded.sle = false;
+    await showTab('sle', { force: true });
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
+async function loadSle() {
+  const [sle, classes] = await Promise.all([
+    fetchJson('/api/sle'),
+    fetchJson('/api/service-classes', { granularity: 'month' }),
+  ]);
+  renderPromises(sle);
+  renderSleAttainment(sle);
+  renderExpedite(classes);
 }
 
 // ============================================================================
@@ -1119,6 +1595,131 @@ async function openChartData(kind) {
           </div>`,
       };
     },
+    blockers: async () => {
+      const data = await fetchJson('/api/blockers');
+      return {
+        title: `Блокировки: ${data.episodes} ${
+          plural(data.episodes, 'эпизод', 'эпизода', 'эпизодов')}`,
+        html: `
+          <p class="section-note">Потери по причинам, отсортированные по убыванию.
+             Накопленная доля показывает, сколько причин набирают 80% простоя.</p>
+          <table>
+            <thead><tr><th>Причина</th><th class="num">Потери</th>
+              <th class="num">Эпизодов</th><th class="num">Доля</th>
+              <th class="num">Накопленно</th></tr></thead>
+            <tbody>${data.pareto.map(row => `
+              <tr>
+                <td>${escapeHtml(row.label)}</td>
+                <td class="num">${hours(row.business_s)}</td>
+                <td class="num">${row.episodes}</td>
+                <td class="num">${percent(row.share)}</td>
+                <td class="num">${percent(row.cumulative_share)}</td>
+              </tr>`).join('')}</tbody>
+          </table>`,
+      };
+    },
+    hidden: async () => {
+      const data = await fetchJson('/api/hidden-queue');
+      return {
+        title: 'Ожидание внутри активных статусов',
+        html: `
+          <p class="section-note">Задача сменила фазу, но осталась на прежнем
+             исполнителе — значит её ещё никто не взял. Это оценка снизу:
+             часть интервалов действительно активна с первой минуты.</p>
+          <table>
+            <thead><tr><th>Фаза</th><th class="num">Всего</th>
+              <th class="num">Из них ждали</th><th class="num">Доля</th></tr></thead>
+            <tbody>${data.by_phase.map(row => `
+              <tr>
+                <td>${escapeHtml(PHASE_LABEL[row.phase] || row.phase)}</td>
+                <td class="num">${hours(row.total_s)}</td>
+                <td class="num">${hours(row.waiting_s)}</td>
+                <td class="num">${percent(row.share)}</td>
+              </tr>`).join('')}</tbody>
+          </table>`,
+      };
+    },
+    transitions: async () => {
+      const data = await fetchJson('/api/transitions');
+      return {
+        title: `Переходы: ${data.total_moves}, из них возвратов ${data.backflow_moves}`,
+        html: `
+          <p class="section-note">Возврат — переход назад по доске. Выход из
+             блокировки возвратом не считается: это возобновление работы.</p>
+          <table>
+            <thead><tr><th>Откуда</th><th>Куда</th>
+              <th class="num">Переходов</th><th></th></tr></thead>
+            <tbody>${data.cells.map(cell => `
+              <tr>
+                <td>${escapeHtml(cell.from)}</td>
+                <td>${escapeHtml(cell.to)}</td>
+                <td class="num">${cell.moves}</td>
+                <td>${cell.is_backflow ? '<span class="pill over">возврат</span>' : ''}</td>
+              </tr>`).join('')}</tbody>
+          </table>`,
+      };
+    },
+    backlog: async () => {
+      const data = await fetchJson('/api/backlog');
+      return {
+        title: `Очередь: ${data.size} ${plural(data.size, 'задача', 'задачи', 'задач')}`,
+        html: `
+          <p class="section-note">Задачи, которые ещё не начинали. Половина ждёт
+             дольше ${calendarDays(data.p50_age_s)}, 15% — дольше
+             ${calendarDays(data.p85_age_s)}. Время календарное: очередь идёт
+             и в выходные.</p>
+          <table>
+            <thead><tr><th>Возраст</th><th class="num">Задач</th></tr></thead>
+            <tbody>${data.histogram.map(bucket => `
+              <tr><td>${escapeHtml(bucket.label)}</td>
+                  <td class="num">${bucket.count}</td></tr>`).join('')}</tbody>
+          </table>`,
+      };
+    },
+    sle: async () => {
+      const data = await fetchJson('/api/sle');
+      if (!data.promises.length) {
+        return { title: 'Обещания', html: '<p class="section-note">Обещание не зафиксировано.</p>' };
+      }
+      return {
+        title: `Попадание при цели ${percent(data.target)}`,
+        html: `
+          <p class="section-note">Доля задач, уложившихся в зафиксированное обещание.
+             Устойчивое падение означает, что либо система замедлилась,
+             либо обещание устарело.</p>
+          <table>
+            <thead><tr><th>Период</th><th class="num">Попадание</th>
+              <th class="num">Уложились</th><th class="num">Всего</th></tr></thead>
+            <tbody>${data.periods.map((period, i) => `
+              <tr>
+                <td>${formatDay(period)}</td>
+                <td class="num">${percent(data.attainment[i])}</td>
+                <td class="num">${data.met[i]}</td>
+                <td class="num">${data.counts[i]}</td>
+              </tr>`).reverse().join('')}</tbody>
+          </table>`,
+      };
+    },
+    classes: async () => {
+      const data = await fetchJson('/api/service-classes', { granularity: 'month' });
+      const total = data.by_class.reduce((sum, item) => sum + item.count, 0) || 1;
+      return {
+        title: `Классы обслуживания: срочных ${percent(data.overall_share)}`,
+        html: `
+          <p class="section-note">Класс задаётся правилом issue_type × priority.
+             ${data.priority_devalued
+               ? 'Срочных больше десятой части — приоритет перестал нести информацию.'
+               : 'Доля срочных в пределах нормы.'}</p>
+          <table>
+            <thead><tr><th>Класс</th><th class="num">Задач</th>
+              <th class="num">Доля</th></tr></thead>
+            <tbody>${data.by_class.map(item => `
+              <tr><td>${escapeHtml(item.name)}</td>
+                  <td class="num">${item.count}</td>
+                  <td class="num">${percent(item.count / total)}</td></tr>`).join('')}</tbody>
+          </table>`,
+      };
+    },
   };
 
   const handler = handlers[kind];
@@ -1376,6 +1977,8 @@ const TAB_LOADERS = {
   cycle: loadCycle,
   phases: loadPhases,
   wip: loadWip,
+  blockers: loadBlockers,
+  sle: loadSle,
   people: loadPeople,
   forecast: loadForecast,
   quality: loadQuality,
@@ -1483,6 +2086,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // разбор
   document.getElementById('explain-btn').addEventListener('click', requestExplanation);
+  document.getElementById('sle-fix-btn').addEventListener('click', fixSle);
 
   // таблица задач
   let searchTimer;

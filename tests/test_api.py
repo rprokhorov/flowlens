@@ -404,3 +404,18 @@ def test_hidden_queue_endpoint(client) -> None:
     data = client.get("/api/hidden-queue").json()
     assert "by_phase" in data
     assert "share" in data
+
+
+def test_dashboard_endpoints_all_registered(client) -> None:
+    """Каждый эндпоинт, который дёргает дашборд, должен существовать.
+
+    Дашборд обращается к ним из JS: пропущенная регистрация видна только
+    как пустая вкладка в браузере, а не как упавший тест.
+    """
+    for path in [
+        "/api/summary", "/api/cycle-time", "/api/cfd", "/api/arrival-throughput",
+        "/api/aging-wip", "/api/flow-efficiency", "/api/blockers", "/api/sle",
+        "/api/transitions", "/api/backlog", "/api/service-classes",
+        "/api/hidden-queue", "/api/people", "/api/quality", "/api/advice",
+    ]:
+        assert client.get(path).status_code == 200, path
