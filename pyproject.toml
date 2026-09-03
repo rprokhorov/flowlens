@@ -2,6 +2,7 @@
 name = "flowlens"
 version = "0.1.0"
 description = "Flow analytics for Kanban ticket streams"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0",
