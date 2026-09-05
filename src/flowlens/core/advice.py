@@ -57,6 +57,8 @@ class Thresholds:
     sle_tolerance: float = 0.05
     # выше этой доли ожидания статус стоит признать очередью, а не работой
     hidden_queue_share: float = 0.20
+    # отношение p98/p50: до 4 разброс рабочий, выше — обещать по медиане нельзя
+    predictability_index: float = 4.0
 
 
 # названия фаз в именительном падеже; для предложного есть отдельный словарь
@@ -83,6 +85,7 @@ def analyse(
     blockers: dict[str, Any] | None = None,
     sle: dict[str, Any] | None = None,
     hidden: dict[str, Any] | None = None,
+    predictability: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     thresholds: Thresholds | None = None,
 ) -> list[Finding]:
@@ -99,6 +102,7 @@ def analyse(
         _rule_blocker_reasons_missing,
         _rule_sle_missed,
         _rule_hidden_queue,
+        _rule_unpredictable,
         _rule_aging,
         _rule_wip_per_person,
         _rule_reopen_rate,
@@ -117,6 +121,7 @@ def analyse(
             blockers=blockers or {},
             sle=sle or {},
             hidden=hidden or {},
+            predictability=predictability or {},
             forecast=forecast or {},
             t=t,
         )
@@ -394,6 +399,50 @@ def _rule_hidden_queue(*, hidden, t, **_) -> Finding | None:
             "phase": worst["phase"],
             "waiting_share": round(float(worst["share"]), 3),
             "waiting_s": worst["waiting_s"],
+        },
+    )
+
+
+def _rule_unpredictable(*, predictability, t, **_) -> Finding | None:
+    """Разброс времени цикла слишком велик, чтобы обещать по медиане.
+
+    Индекс — отношение хвоста к медиане. Он не зависит от абсолютной скорости,
+    поэтому ловит потерю управляемости даже там, где средние показатели
+    выглядят стабильно.
+    """
+    known = [value for value in predictability.get("index", []) if value is not None]
+    if len(known) < 2:
+        return None
+
+    latest = known[-1]
+    if latest < t.predictability_index:
+        return None
+
+    growing = len(known) >= 3 and known[-1] > known[-3]
+    p50 = next(
+        (d["p50_s"] for d in reversed(predictability.get("details", [])) if d.get("reliable")),
+        None,
+    )
+
+    return Finding(
+        code="unpredictable",
+        severity=Severity.ACT if latest >= t.predictability_index * 2 else Severity.WATCH,
+        title=f"Долгие задачи идут в {latest:.1f} раза дольше типичных",
+        detail=(
+            f"Медиана — {_hours(p50)}, но верхние 2% задач тянутся во столько раз "
+            "дольше. При таком разбросе обещание по медиане не выполняется чаще, "
+            "чем выполняется."
+            + (" Разброс растёт последние периоды." if growing else "")
+        ),
+        suggestion=(
+            "Обещать по 85-му перцентилю, а не по среднему. Сам разброс обычно "
+            "сокращается не ускорением работы, а уменьшением WIP и разбором "
+            "очередей: именно ожидание делает хвост длинным."
+        ),
+        evidence={
+            "index": latest,
+            "history": known[-6:],
+            "growing": growing,
         },
     )
 

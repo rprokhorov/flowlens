@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
@@ -23,6 +24,7 @@ from flowlens.analytics import (
     interventions,
     open_backlog_size,
     people_load,
+    predictability,
     summary,
     throughput_history,
     transition_matrix,
@@ -531,3 +533,61 @@ def test_hidden_queue_totals_match_phases(data) -> None:
     result = hidden_queue(data, Filters())
     assert sum(p["waiting_s"] for p in result["by_phase"]) == result["hidden_waiting_s"]
     assert sum(p["total_s"] for p in result["by_phase"]) == result["active_s"]
+
+
+# --- предсказуемость ---------------------------------------------------------
+
+
+def test_predictability_index_is_ratio(data) -> None:
+    """Индекс — отношение хвоста к медиане, всегда не меньше единицы."""
+    result = predictability(data, Filters())
+    for detail in result["details"]:
+        if detail["index"] is not None:
+            assert detail["index"] >= 1.0
+            assert detail["p98_s"] >= detail["p50_s"]
+
+
+def test_predictability_hides_small_samples(data) -> None:
+    """На малой выборке p98 описывает один выброс, а не систему."""
+    result = predictability(data, Filters())
+    for detail in result["details"]:
+        if detail["count"] < result["min_sample"]:
+            assert detail["index"] is None
+            assert not detail["reliable"]
+
+
+def test_predictability_overall_matches_details(data) -> None:
+    result = predictability(data, Filters())
+    known = [d["index"] for d in result["details"] if d["index"] is not None]
+    if known:
+        assert result["overall"] == pytest.approx(sum(known) / len(known), abs=0.01)
+        assert result["latest"] == known[-1]
+
+
+def test_predictability_empty_without_data(data) -> None:
+    result = predictability(data, replace(Filters(), issue_types=["не существует"]))
+    assert result["periods"] == []
+    assert result["overall"] is None
+
+
+# --- критерий завершения -----------------------------------------------------
+
+
+def test_completion_criterion_changes_cycle_time(data) -> None:
+    """Без ожидания релиза время цикла меньше — на величину этого ожидания."""
+    terminal = summary(data, Filters())
+    work_done = summary(data, replace(Filters(), completion="work_done"))
+    assert work_done["p50_cycle_s"] <= terminal["p50_cycle_s"]
+
+
+def test_completion_criterion_keeps_sample_size(data) -> None:
+    """Меняется граница, а не состав выборки: незавершённые остаются вне её."""
+    terminal = cycle_time_distribution(data, Filters())
+    work_done = cycle_time_distribution(data, replace(Filters(), completion="work_done"))
+    assert terminal["count"] == work_done["count"]
+
+
+def test_completion_criterion_never_negative(data) -> None:
+    work_done = cycle_time_distribution(data, replace(Filters(), completion="work_done"))
+    for bucket in work_done["histogram"]:
+        assert bucket["from"] >= 0

@@ -33,12 +33,36 @@ class Filters:
     # фильтр по достоверности: не показывать метрики, которым нельзя верить
     min_confidence: Literal["low", "medium", "high"] = "low"
     unit: TimeUnit = "business"
+    # Где проходит граница «готово». `terminal` — до конца доски, как отвечает
+    # команда «от и до». `work_done` — до момента, когда работа сделана, без
+    # ожидания релизного окна. Спор о том, какая граница верна, решается
+    # переключателем: показать оба числа быстрее, чем договориться словами.
+    completion: Literal["terminal", "work_done"] = "terminal"
 
     def duration_column(self, prefix: str = "ti") -> str:
         return f"{prefix}.duration_{self.unit}_s"
 
     def metric_column(self, base: str) -> str:
         return f"{base}_{self.unit}_s"
+
+    def cycle_time_expr(self, alias: str = "m") -> str:
+        """Время цикла с учётом выбранной границы «готово».
+
+        Ожидание релиза уже посчитано отдельным слагаемым, поэтому вариант
+        «до готовности работы» получается вычитанием — пересчёт не нужен.
+        Вычитаем только из рабочего времени: release_wait в календарных
+        секундах не хранится, и смешивать шкалы нельзя.
+        """
+        column = f"{alias}.{self.metric_column('cycle_time')}"
+        if self.completion == "terminal" or self.unit != "business":
+            return column
+        # NULL означает «задача не завершена» и обязан остаться NULL: без явной
+        # проверки GREATEST(0, NULL - x) дал бы 0, и незавершённые задачи попали
+        # бы в выборку с нулевым временем цикла, занизив все перцентили.
+        return (
+            f"CASE WHEN {column} IS NULL THEN NULL ELSE "
+            f"GREATEST(0, {column} - COALESCE({alias}.release_wait_business_s, 0)) END"
+        )
 
 
 CONFIDENCE_RANK = {"low": 1, "medium": 2, "high": 3}
@@ -103,7 +127,7 @@ def cycle_time_distribution(engine: Engine, filters: Filters) -> dict[str, Any]:
     """
     params: dict[str, Any] = {}
     conditions = _ticket_conditions(filters, params)
-    column = f"m.{filters.metric_column('cycle_time')}"
+    column = filters.cycle_time_expr()
     conditions.append(f"{column} IS NOT NULL")
     confidence = _confidence_condition(filters, params)
     if confidence:
@@ -712,7 +736,7 @@ def sle_attainment(
 
     params: dict[str, Any] = {"granularity": granularity}
     conditions = _ticket_conditions(filters, params)
-    column = f"m.{filters.metric_column('cycle_time')}"
+    column = filters.cycle_time_expr()
     conditions.append(f"{column} IS NOT NULL")
     confidence = _confidence_condition(filters, params)
     if confidence:
@@ -1022,6 +1046,92 @@ def hidden_queue(engine: Engine, filters: Filters) -> dict[str, Any]:
     }
 
 
+# --- предсказуемость ---------------------------------------------------------
+
+# Ниже этого числа завершённых задач p98 — это буквально одна-две самые долгие
+# задачи, и отношение к медиане скачет от единственного выброса. Порог подобран
+# так, чтобы месяц работы команды из 5-8 человек в него укладывался: при более
+# строгом пороге индекс не считается почти нигде и метрика бесполезна.
+MIN_PREDICTABILITY_SAMPLE = 30
+
+
+def predictability(
+    engine: Engine, filters: Filters, granularity: str = "month"
+) -> dict[str, Any]:
+    """Отношение хвоста времени цикла к медиане, по периодам.
+
+    Отвечает на вопрос, который иначе приходится объяснять абзацем: насколько
+    вообще осмысленны обещания. Индекс 2-3 означает, что медиана что-то значит;
+    10 и выше — что фраза «в среднем неделя» не несёт информации.
+
+    Ценность именно в отношении, а не в абсолютной величине: оно не зависит от
+    того, быстрая команда или медленная, и потому сравнимо во времени и между
+    командами. Рост индекса при неизменной медиане — ранний признак потери
+    управляемости, который средние показатели не показывают.
+    """
+    params: dict[str, Any] = {"granularity": granularity}
+    conditions = _ticket_conditions(filters, params)
+    column = filters.cycle_time_expr()
+    conditions.append(f"{column} IS NOT NULL")
+    conditions.append("t.closed_at IS NOT NULL")
+    confidence = _confidence_condition(filters, params)
+    if confidence:
+        conditions.append(confidence)
+
+    query = f"""
+        SELECT CAST(date_trunc(:granularity, t.closed_at) AS date) AS period,
+               {column} AS value
+        FROM ticket_metrics m
+        JOIN ticket t ON t.id = m.ticket_id
+        {_where(conditions)}
+        ORDER BY period, value
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    buckets: dict[Any, list[int]] = {}
+    for r in rows:
+        buckets.setdefault(r.period, []).append(r.value)
+
+    periods: list[str] = []
+    index: list[float | None] = []
+    details: list[dict[str, Any]] = []
+    for period in sorted(buckets):
+        values = sorted(buckets[period])
+        p50 = _percentile(values, 50)
+        p98 = _percentile(values, 98)
+        enough = len(values) >= MIN_PREDICTABILITY_SAMPLE
+        ratio = round(p98 / p50, 2) if (enough and p50) else None
+
+        periods.append(period.isoformat())
+        index.append(ratio)
+        details.append(
+            {
+                "period": period.isoformat(),
+                "index": ratio,
+                "p50_s": p50,
+                "p98_s": p98,
+                "count": len(values),
+                # на малой выборке индекс не показываем: он будет описывать
+                # один выброс, а не свойство системы
+                "reliable": enough,
+            }
+        )
+
+    known = [value for value in index if value is not None]
+    overall = round(sum(known) / len(known), 2) if known else None
+
+    return {
+        "periods": periods,
+        "index": index,
+        "details": details,
+        "overall": overall,
+        "latest": known[-1] if known else None,
+        "min_sample": MIN_PREDICTABILITY_SAMPLE,
+        "unit": filters.unit,
+    }
+
+
 # --- нагрузка по людям -------------------------------------------------------
 
 
@@ -1086,15 +1196,16 @@ def summary(engine: Engine, filters: Filters) -> dict[str, Any]:
     """Ключевые показатели одним запросом — для верхних плиток дашборда."""
     params: dict[str, Any] = {}
     conditions = _ticket_conditions(filters, params)
+    cycle = filters.cycle_time_expr()
 
     query = f"""
         SELECT
             count(*) AS total,
             count(*) FILTER (WHERE t.closed_at IS NULL) AS open_tickets,
             count(*) FILTER (WHERE m.cycle_time_business_s IS NOT NULL) AS completed,
-            percentile_disc(0.5) WITHIN GROUP (ORDER BY m.cycle_time_business_s) AS p50_cycle,
-            percentile_disc(0.85) WITHIN GROUP (ORDER BY m.cycle_time_business_s) AS p85_cycle,
-            percentile_disc(0.95) WITHIN GROUP (ORDER BY m.cycle_time_business_s) AS p95_cycle,
+            percentile_disc(0.5) WITHIN GROUP (ORDER BY {cycle}) AS p50_cycle,
+            percentile_disc(0.85) WITHIN GROUP (ORDER BY {cycle}) AS p85_cycle,
+            percentile_disc(0.95) WITHIN GROUP (ORDER BY {cycle}) AS p95_cycle,
             avg(m.flow_efficiency) AS avg_efficiency,
             CAST(sum(m.reopen_count) AS bigint) AS reopens,
             count(*) FILTER (WHERE m.blocked_episode_count > 0) AS ever_blocked,
@@ -1285,10 +1396,10 @@ def ticket_list(
         conditions.append("(t.external_key ILIKE :search OR t.summary ILIKE :search)")
         params["search"] = f"%{search}%"
     if min_cycle_s is not None:
-        conditions.append(f"m.{filters.metric_column('cycle_time')} >= :min_cycle")
+        conditions.append(f"{filters.cycle_time_expr()} >= :min_cycle")
         params["min_cycle"] = min_cycle_s
     if max_cycle_s is not None:
-        conditions.append(f"m.{filters.metric_column('cycle_time')} < :max_cycle")
+        conditions.append(f"{filters.cycle_time_expr()} < :max_cycle")
         params["max_cycle"] = max_cycle_s
     if anomaly:
         conditions.append(
@@ -1302,7 +1413,7 @@ def ticket_list(
         conditions.append(confidence)
 
     sort_columns = {
-        "cycle_time": f"m.{filters.metric_column('cycle_time')}",
+        "cycle_time": filters.cycle_time_expr(),
         "lead_time": f"m.{filters.metric_column('lead_time')}",
         "created": "t.created_at",
         "key": "t.external_key",

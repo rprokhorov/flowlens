@@ -49,6 +49,7 @@ def get_filters(
     include_subtasks: Annotated[bool, Query()] = True,
     min_confidence: Annotated[Literal["low", "medium", "high"], Query()] = "low",
     unit: Annotated[Literal["business", "calendar"], Query()] = "business",
+    completion: Annotated[Literal["terminal", "work_done"], Query()] = "terminal",
 ) -> Filters:
     """Общие параметры отбора для всех отчётов."""
     return Filters(
@@ -62,6 +63,7 @@ def get_filters(
         include_subtasks=include_subtasks,
         min_confidence=min_confidence,
         unit=unit,
+        completion=completion,
     )
 
 
@@ -174,6 +176,16 @@ def get_hidden_queue(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     return analytics.hidden_queue(engine, filters)
 
 
+@app.get("/api/predictability")
+def get_predictability(
+    engine: EngineDep,
+    filters: FiltersDep,
+    granularity: Annotated[Literal["week", "month"], Query()] = "month",
+) -> dict[str, Any]:
+    """Отношение хвоста времени цикла к медиане по периодам."""
+    return analytics.predictability(engine, filters, granularity)
+
+
 @app.get("/api/people")
 def get_people(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     """Распределение нагрузки между людьми."""
@@ -227,6 +239,7 @@ def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
         blockers=analytics.blockers(engine, filters),
         sle=analytics.sle_attainment(engine, filters),
         hidden=analytics.hidden_queue(engine, filters),
+        predictability=analytics.predictability(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days

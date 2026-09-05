@@ -347,6 +347,7 @@ def advice(
         blockers=analytics.blockers(engine, filters),
         sle=analytics.sle_attainment(engine, filters),
         hidden=analytics.hidden_queue(engine, filters),
+        predictability=analytics.predictability(engine, filters),
         forecast={
             "wip_health": wip_health(
                 analytics.average_wip(engine, filters), per_day, cycle_days
@@ -374,6 +375,41 @@ def advice(
         if finding.ticket_keys:
             typer.echo(f"     задачи: {', '.join(finding.ticket_keys)}")
         typer.echo("")
+
+
+@app.command("export")
+def export_command(
+    output: Annotated[Path, typer.Option(help="Куда записать срез")] = Path("slice.ndjson"),
+    days: Annotated[int, typer.Option(help="За сколько последних дней")] = 180,
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Не обезличивать: сохранить ключи, заголовки, имена"),
+    ] = False,
+) -> None:
+    """Выгрузить срез данных в файл — показать метрики без доступа к базе.
+
+    По умолчанию обезличено: ключи и имена заменяются устойчивыми псевдонимами,
+    заголовки убираются. Метрики от этого не меняются — они считаются
+    по статусам и времени.
+    """
+    from datetime import timedelta
+
+    from flowlens.analytics import Filters
+    from flowlens.export import export_tickets
+
+    engine = make_engine()
+    filters = Filters(date_from=(datetime.now().date() - timedelta(days=days)))
+    stats = export_tickets(engine, filters, output, anonymize=not full)
+
+    kind = "как есть" if full else "обезличено"
+    typer.echo(
+        f"Выгружено {stats.tickets} задач и {stats.events} событий в {output} ({kind})."
+    )
+    if full:
+        typer.echo(
+            "Внимание: файл содержит ключи задач, заголовки и имена людей. "
+            "Он уносит эти данные за пределы вашего контура."
+        )
 
 
 @app.command("sle")
