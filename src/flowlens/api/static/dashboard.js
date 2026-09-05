@@ -1087,6 +1087,65 @@ function renderPredictability(data) {
   }, true);
 }
 
+function openImport() {
+  document.getElementById('import-result').innerHTML = '';
+  document.getElementById('import-modal').hidden = false;
+}
+
+function closeImport() {
+  document.getElementById('import-modal').hidden = true;
+}
+
+async function submitImport() {
+  const input = document.getElementById('import-file');
+  const result = document.getElementById('import-result');
+  const button = document.getElementById('import-submit');
+  const file = input.files && input.files[0];
+
+  if (!file) {
+    result.innerHTML = 'Выберите файл.';
+    return;
+  }
+
+  const replace = document.getElementById('import-replace').checked;
+  if (replace && !window.confirm(
+    'Текущие данные будут удалены и заменены содержимым файла. Продолжить?'
+  )) return;
+
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Загружаю…';
+  result.innerHTML = 'Разбираю файл и пересчитываю метрики…';
+
+  try {
+    const body = new FormData();
+    body.append('file', file);
+    body.append('replace_existing', String(replace));
+
+    const response = await fetch('/api/import', { method: 'POST', body });
+    const data = await response.json();
+    if (!response.ok) {
+      result.innerHTML = `Не получилось: ${escapeHtml(data.detail || response.statusText)}`;
+      return;
+    }
+
+    result.innerHTML = `Загружено ${data.tickets} `
+      + `${plural(data.tickets, 'задача', 'задачи', 'задач')} и ${data.events} `
+      + `${plural(data.events, 'событие', 'события', 'событий')} из «${escapeHtml(data.source)}». `
+      + 'Обновляю графики…';
+
+    // данные сменились целиком — все вкладки надо пересчитать
+    invalidateAll();
+    setTimeout(closeImport, 1200);
+  } catch (error) {
+    console.error(error);
+    result.innerHTML = `Не получилось: ${escapeHtml(error.message)}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
 async function exportSlice() {
   const button = document.getElementById('export-btn');
   const full = window.confirm(
@@ -2220,6 +2279,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('explain-btn').addEventListener('click', requestExplanation);
   document.getElementById('sle-fix-btn').addEventListener('click', fixSle);
   document.getElementById('export-btn').addEventListener('click', exportSlice);
+  document.getElementById('import-btn').addEventListener('click', openImport);
+  document.getElementById('import-submit').addEventListener('click', submitImport);
+  for (const element of document.querySelectorAll('[data-close-import]')) {
+    element.addEventListener('click', closeImport);
+  }
 
   // таблица задач
   let searchTimer;
@@ -2246,7 +2310,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (event.target.id === 'modal') closeModal();
   });
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !document.getElementById('modal').hidden) closeModal();
+    if (event.key !== 'Escape') return;
+    if (!document.getElementById('modal').hidden) closeModal();
+    if (!document.getElementById('import-modal').hidden) closeImport();
   });
 
   // делегирование: ключи задач, кнопки «Данные», числа аномалий

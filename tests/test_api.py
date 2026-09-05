@@ -432,3 +432,74 @@ def test_dashboard_versions_static_assets(client) -> None:
     for asset in ("dashboard.js", "style.css"):
         assert f"/static/{asset}?v=" in html, asset
         assert f'"/static/{asset}"' not in html, f"{asset} подключён без версии"
+
+
+# --- импорт и выгрузка -------------------------------------------------------
+
+
+def test_import_format_documented(client) -> None:
+    """Формат описан в API: файл можно собрать, не читая исходники."""
+    data = client.get("/api/import/format").json()
+    assert "external_key" in data["required_ticket_fields"]
+    assert data["example"]["ticket"]["events"][0]["kind"] == "created"
+
+
+def test_import_csv_transitions(client) -> None:
+    content = (
+        "key,type,status_from,status_to,changed_at\n"
+        "IMP-1,Task,new,in progress,2026-01-15T10:00:00+03:00\n"
+        "IMP-1,Task,in progress,done,2026-01-16T10:00:00+03:00\n"
+    )
+    response = client.post(
+        "/api/import",
+        files={"file": ("moves.csv", content, "text/csv")},
+        data={"replace_existing": "false"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tickets"] == 1
+    assert body["source"] == "moves"
+
+
+def test_import_rejects_unparsable(client) -> None:
+    response = client.post(
+        "/api/import",
+        files={"file": ("bad.csv", "foo,bar\n1,2\n", "text/csv")},
+    )
+    assert response.status_code == 422
+    assert "ключ" in response.json()["detail"]
+
+
+def test_import_rejects_empty(client) -> None:
+    response = client.post(
+        "/api/import",
+        files={"file": ("empty.csv", "key,created\n", "text/csv")},
+    )
+    assert response.status_code == 422
+
+
+def test_export_returns_file(client) -> None:
+    response = client.get("/api/export")
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+    assert int(response.headers["X-Flowlens-Tickets"]) > 0
+
+
+def test_export_anonymized_by_default(client) -> None:
+    """Ключи задач не должны уезжать из контура без явного согласия."""
+    anon = client.get("/api/export").text
+    assert "TASK-" in anon
+
+    full = client.get("/api/export", params={"full": "true"}).text
+    assert "TASK-" not in full
+
+
+def test_export_roundtrips_through_import(client) -> None:
+    """Выгруженный файл принимается импортом — иначе им нельзя поделиться."""
+    exported = client.get("/api/export").content
+    response = client.post(
+        "/api/import",
+        files={"file": ("slice.ndjson", exported, "application/x-ndjson")},
+    )
+    assert response.status_code == 200
+    assert response.json()["tickets"] > 0

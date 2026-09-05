@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine, text
@@ -220,6 +220,113 @@ def get_export(
             "X-Flowlens-Events": str(stats.events),
         },
     )
+
+
+@app.get("/api/import/format")
+def get_import_format() -> dict[str, Any]:
+    """Описание ожидаемого формата — чтобы файл можно было собрать самому."""
+    from flowlens.contract import CONTRACT_VERSION
+
+    return {
+        "version": CONTRACT_VERSION,
+        "media_type": "application/x-ndjson",
+        "structure": (
+            "NDJSON: первая строка — профиль источника, "
+            "каждая следующая — один тикет со всей его историей."
+        ),
+        "required_ticket_fields": [
+            "external_key", "project_key", "issue_type", "status", "created_at",
+        ],
+        "required_event_fields": ["kind", "occurred_at"],
+        "notes": [
+            "Все даты — с часовым поясом (ISO 8601).",
+            "Первым событием тикета обязан быть created.",
+            "Статусы передаются как есть; сопоставление с фазами — на стороне ядра.",
+            "Файл, выгруженный кнопкой «Выгрузить срез», подходит для импорта.",
+        ],
+        "example": {
+            "profile": {
+                "source_kind": "csv",
+                "source_name": "my-tracker",
+                "changelog": "full",
+            },
+            "ticket": {
+                "external_key": "PROJ-1",
+                "project_key": "PROJ",
+                "issue_type": "Task",
+                "status": "done",
+                "created_at": "2026-01-15T10:00:00+03:00",
+                "events": [
+                    {"kind": "created", "occurred_at": "2026-01-15T10:00:00+03:00"},
+                    {
+                        "kind": "status_change",
+                        "occurred_at": "2026-01-16T11:00:00+03:00",
+                        "field": "status",
+                        "old_value": "new",
+                        "new_value": "in progress",
+                    },
+                ],
+            },
+        },
+    }
+
+
+@app.post("/api/import")
+async def post_import(
+    engine: EngineDep,
+    file: Annotated[UploadFile, File(description="NDJSON или CSV с выгрузкой")],
+    replace_existing: Annotated[bool, Form()] = False,
+) -> dict[str, Any]:
+    """Загрузить выгрузку и пересчитать метрики.
+
+    Формат определяется по расширению: NDJSON контракта либо CSV, который
+    приводится к контракту автоматически.
+    """
+    import tempfile
+
+    from flowlens.contract import read_ndjson
+    from flowlens.importer import import_tickets
+    from flowlens.pipeline import recompute_all
+    from flowlens.repository import reset_data
+
+    name = (file.filename or "upload").lower()
+    suffix = ".csv" if name.endswith(".csv") else ".ndjson"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+        handle.write(await file.read())
+        path = Path(handle.name)
+
+    try:
+        if suffix == ".csv":
+            from flowlens.collectors.csv_source import read_csv
+
+            # имя источника берём из загруженного файла: путь во временной
+            # директории случайный и в интерфейсе выглядит мусором
+            profile, tickets = read_csv(path, source_name=Path(name).stem)
+        else:
+            profile, tickets = read_ndjson(path)
+
+        if not tickets:
+            raise HTTPException(status_code=422, detail="В файле нет ни одного тикета")
+
+        if replace_existing:
+            reset_data(engine)
+        stats = import_tickets(engine, profile, tickets)
+        recompute_all(engine)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Файл не разобран: {exc}") from exc
+    finally:
+        path.unlink(missing_ok=True)
+
+    return {
+        "tickets": stats.tickets,
+        "events": stats.events,
+        "people": stats.people,
+        "source": profile.source_name,
+        "replaced": replace_existing,
+    }
 
 
 @app.get("/api/people")

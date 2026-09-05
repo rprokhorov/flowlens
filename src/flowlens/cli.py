@@ -377,6 +377,53 @@ def advice(
         typer.echo("")
 
 
+@app.command("import-csv")
+def import_csv_command(
+    path: Annotated[Path, typer.Argument(help="CSV-файл выгрузки")],
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Заменить текущие данные")
+    ] = False,
+    describe: Annotated[
+        bool, typer.Option("--describe", help="Только показать, что распозналось")
+    ] = False,
+) -> None:
+    """Импортировать CSV-выгрузку из любого трекера."""
+    from flowlens.collectors.csv_source import describe_columns, read_csv
+    from flowlens.importer import import_tickets
+    from flowlens.pipeline import recompute_all
+    from flowlens.repository import reset_data
+
+    if describe:
+        info = describe_columns(path)
+        shape = "история переходов" if info["shape"] == "transitions" else "плоский список"
+        typer.echo(f"Форма: {shape}")
+        typer.echo("Распознано:")
+        for field, column in info["matched"].items():
+            typer.echo(f"  {field:12} ← {column}")
+        if info["unmatched"]:
+            typer.echo(f"Не распознано (будет пропущено): {', '.join(info['unmatched'])}")
+        return
+
+    try:
+        profile, tickets = read_csv(path)
+    except ValueError as exc:
+        typer.echo(f"Не могу разобрать файл: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    engine = make_engine()
+    if replace:
+        reset_data(engine)
+    stats = import_tickets(engine, profile, tickets)
+    recompute_all(engine)
+
+    typer.echo(f"Импортировано {stats.tickets} задач, {stats.events} событий.")
+    if profile.changelog == "none":
+        typer.echo(
+            "В файле нет истории переходов: время по фазам и возвраты "
+            "посчитать не из чего. Время цикла и пропускная способность работают."
+        )
+
+
 @app.command("export")
 def export_command(
     output: Annotated[Path, typer.Option(help="Куда записать срез")] = Path("slice.ndjson"),

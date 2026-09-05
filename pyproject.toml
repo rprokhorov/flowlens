@@ -12,6 +12,7 @@ dependencies = [
     "typer",
     "python-dateutil",
     "fastapi",
+    "python-multipart",  # загрузка файлов через форму импорта
     "uvicorn[standard]",
     "httpx",
     "pyyaml",

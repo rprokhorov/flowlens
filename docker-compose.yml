@@ -15,5 +15,52 @@ services:
       timeout: 3s
       retries: 10
 
+  # Разовая инициализация: миграции и — если база пуста — демо-данные.
+  # Отдельным сервисом, а не шагом внутри app, чтобы перезапуск дашборда
+  # не пересоздавал данные и не затирал то, что импортировали.
+  init:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://flowlens:flowlens@db:5432/flowlens
+      FLOWLENS_DEMO: ${FLOWLENS_DEMO:-1}
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        alembic upgrade head
+        if [ "$$FLOWLENS_DEMO" = "1" ]; then
+          COUNT=$$(python -c "
+        from flowlens.db import make_engine
+        from sqlalchemy import text
+        with make_engine().begin() as c:
+            print(c.execute(text('SELECT count(*) FROM ticket')).scalar_one())
+        ")
+          if [ "$$COUNT" = "0" ]; then
+            echo 'База пуста — заливаю демо-данные.'
+            flowlens seed-demo --tickets 400 --months 8
+            flowlens recompute --all
+          else
+            echo "В базе уже $$COUNT задач — демо-данные не трогаю."
+          fi
+        fi
+    restart: "no"
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://flowlens:flowlens@db:5432/flowlens
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   pgdata:

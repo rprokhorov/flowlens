@@ -13,6 +13,8 @@
     <h1>FlowLens</h1>
     <span class="subtitle" id="period">—</span>
     <div class="spacer"></div>
+    <button id="import-btn" class="ghost"
+            title="Загрузить выгрузку из трекера">Импорт данных</button>
     <button id="export-btn" class="ghost"
             title="Выгрузить текущий срез в файл — показать метрики без доступа к базе">Выгрузить срез</button>
     <button id="theme-toggle" title="Переключить тему">◐</button>
@@ -373,6 +375,69 @@
       <button id="modal-close" class="ghost">✕</button>
     </div>
     <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="import-modal" class="modal" hidden>
+  <div class="modal-box import-box">
+    <div class="modal-head">
+      <h2>Импорт данных</h2>
+      <button class="ghost" data-close-import>✕</button>
+    </div>
+
+    <div class="modal-body">
+      <p class="hint">Подойдёт выгрузка из любого трекера. Метрики считаются
+         по статусам и датам, поэтому заголовки и описания не нужны.</p>
+
+      <h3>CSV — история переходов</h3>
+      <p class="hint">Лучший вариант: по строке на каждую смену статуса.
+         Из него восстанавливается полная история, и работают все метрики,
+         включая время по фазам и возвраты.</p>
+      <pre class="sample">key,type,status_from,status_to,changed_at,author
+PROJ-1,Bug,new,in progress,2026-01-15T10:00:00+03:00,ivan
+PROJ-1,Bug,in progress,qa,2026-01-16T14:30:00+03:00,ivan
+PROJ-1,Bug,qa,done,2026-01-17T11:00:00+03:00,maria</pre>
+
+      <h3>CSV — плоский список задач</h3>
+      <p class="hint">Если истории переходов нет. Время цикла и пропускная
+         способность посчитаются, а время по фазам и возвраты — нет:
+         их неоткуда взять.</p>
+      <pre class="sample">key,type,status,created,started,resolved
+PROJ-10,Task,done,2026-01-15,2026-01-16,2026-01-20
+PROJ-11,Bug,done,2026-01-16,2026-01-17,2026-01-19</pre>
+
+      <h3>NDJSON контракта</h3>
+      <p class="hint">Формат выгрузки коллекторов и кнопки «Выгрузить срез».
+         Первая строка — профиль источника, дальше по тикету на строку
+         со всей его историей.</p>
+
+      <h3>Что важно</h3>
+      <ul class="hint">
+        <li>Названия колонок распознаются по синонимам, русским и английским:
+            <code>key</code> / <code>ключ</code> / <code>задача</code>,
+            <code>created</code> / <code>создано</code> и так далее.</li>
+        <li>Разделитель определяется сам — запятая, точка с запятой или таб.</li>
+        <li>Даты: ISO, <code>15.01.2026</code>, <code>2026-01-15 10:00</code>.
+            Без часового пояса считается время команды.</li>
+        <li>Статусы передаются как есть — сопоставление с фазами настраивается
+            уже внутри.</li>
+      </ul>
+
+      <label class="import-file">
+        <input type="file" id="import-file" accept=".csv,.ndjson,.json">
+      </label>
+      <label class="import-replace">
+        <input type="checkbox" id="import-replace">
+        Заменить текущие данные (иначе выгрузка добавится к имеющимся)
+      </label>
+
+      <div id="import-result"></div>
+    </div>
+
+      <div class="import-actions">
+        <button id="import-submit">Загрузить</button>
+      </div>
+    </div>
   </div>
 </div>
 
