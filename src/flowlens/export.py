@@ -28,6 +28,7 @@ from flowlens.contract import (
     write_ndjson,
 )
 
+
 @dataclass
 class ExportStats:
     tickets: int
