@@ -335,6 +335,37 @@ tbody tr:hover { background: var(--surface-2); }
   font-size: 12.5px; color: var(--text-secondary); margin-bottom: 14px;
 }
 .import-actions { display: flex; justify-content: flex-end; padding-top: 4px; }
+.source-tabs {
+  display: flex; gap: 4px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--border); padding-bottom: 0;
+}
+.source-tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 8px 14px; font-size: 13px; color: var(--text-muted); cursor: pointer;
+}
+.source-tab:hover { color: var(--text-secondary); }
+.source-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.field { display: block; margin-bottom: 12px; }
+.field span {
+  display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px;
+}
+.field input {
+  width: 100%; padding: 8px 10px; border-radius: 8px; font-size: 13px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-primary);
+}
+.field-guess {
+  display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px;
+  align-items: center; margin-bottom: 8px; font-size: 12.5px;
+}
+.field-guess select {
+  padding: 6px 8px; border-radius: 6px; font-size: 12.5px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-primary);
+}
+.guess-mark { font-size: 11px; color: var(--text-muted); }
+#jira-check-result:not(:empty), #jira-sync-result:not(:empty) {
+  margin: 12px 0; padding: 10px 12px; border-radius: 8px; font-size: 12.5px;
+  line-height: 1.5; background: var(--surface-2); border: 1px solid var(--border);
+}
 #import-result:not(:empty) {
   margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px;
   font-size: 12.5px; line-height: 1.5;

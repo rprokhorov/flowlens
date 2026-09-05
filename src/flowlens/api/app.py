@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from sqlalchemy import Engine, text
 
 from flowlens import analytics
@@ -326,6 +327,104 @@ async def post_import(
         "people": stats.people,
         "source": profile.source_name,
         "replaced": replace_existing,
+    }
+
+
+class JiraCheckRequest(BaseModel):
+    """Параметры проверки подключения к Jira."""
+
+    base_url: str
+    token: str | None = None
+    username: str | None = None
+    password: str | None = None
+    verify_ssl: bool = True
+
+
+class JiraSyncRequest(JiraCheckRequest):
+    """Параметры выгрузки."""
+
+    source_name: str = "jira"
+    jql: str
+    mapping: dict[str, str] = {}
+    limit: int | None = None
+    replace_existing: bool = False
+
+
+@app.post("/api/jira/check")
+def post_jira_check(request: JiraCheckRequest) -> dict[str, Any]:
+    """Проверить доступ и предложить сопоставление полей.
+
+    Секреты приходят в теле запроса и никуда не сохраняются: сессия проверки
+    живёт ровно до ответа. Для регулярной синхронизации выдаётся YAML,
+    в котором вместо токена стоит имя переменной окружения.
+    """
+    from flowlens.collectors.jira_setup import check_connection
+
+    result = check_connection(
+        request.base_url,
+        token=request.token,
+        username=request.username,
+        password=request.password,
+        verify_ssl=request.verify_ssl,
+    )
+    if not result.ok:
+        raise HTTPException(status_code=422, detail=result.error or "Не удалось подключиться")
+
+    return {
+        "user": result.user,
+        "statuses": result.statuses,
+        "guesses": [
+            {
+                "purpose": g.purpose,
+                "field_id": g.field_id,
+                "field_name": g.field_name,
+                "confidence": g.confidence,
+                "candidates": g.candidates,
+            }
+            for g in result.guesses
+        ],
+    }
+
+
+@app.post("/api/jira/sync")
+def post_jira_sync(engine: EngineDep, request: JiraSyncRequest) -> dict[str, Any]:
+    """Выгрузить из Jira и пересчитать метрики."""
+    from flowlens.collectors.jira import collect
+    from flowlens.collectors.jira_setup import build_config, config_to_yaml
+    from flowlens.importer import import_tickets
+    from flowlens.pipeline import recompute_all
+    from flowlens.repository import reset_data
+
+    config = build_config(
+        source_name=request.source_name,
+        base_url=request.base_url,
+        jql=request.jql,
+        token=request.token,
+        username=request.username,
+        password=request.password,
+        verify_ssl=request.verify_ssl,
+        mapping=request.mapping,
+    )
+    try:
+        profile, tickets = collect(config, limit=request.limit)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Выгрузка не удалась: {exc}") from exc
+
+    if not tickets:
+        raise HTTPException(status_code=422, detail="По этому JQL не нашлось ни одной задачи")
+
+    if request.replace_existing:
+        reset_data(engine)
+    stats = import_tickets(engine, profile, tickets)
+    recompute_all(engine)
+
+    return {
+        "tickets": stats.tickets,
+        "events": stats.events,
+        "people": stats.people,
+        # YAML отдаётся, чтобы дальше запускать синхронизацию по расписанию
+        # без интерфейса; токена в нём нет
+        "config_yaml": config_to_yaml(config),
     }
 
 

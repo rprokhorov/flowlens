@@ -503,3 +503,19 @@ def test_export_roundtrips_through_import(client) -> None:
     )
     assert response.status_code == 200
     assert response.json()["tickets"] > 0
+
+
+def test_jira_check_requires_reachable_host(client) -> None:
+    """Недоступный адрес объясняется человеку, а не роняет запрос."""
+    response = client.post(
+        "/api/jira/check",
+        json={"base_url": "https://jira.invalid.example", "token": "x"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]
+
+
+def test_jira_sync_validates_payload(client) -> None:
+    """JQL обязателен: без него выгружать нечего."""
+    response = client.post("/api/jira/sync", json={"base_url": "https://x.example"})
+    assert response.status_code == 422

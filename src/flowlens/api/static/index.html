@@ -386,6 +386,12 @@
     </div>
 
     <div class="modal-body">
+      <div class="source-tabs">
+        <button class="source-tab active" data-source="file">Файл</button>
+        <button class="source-tab" data-source="jira">Подключить Jira</button>
+      </div>
+
+      <div class="source-pane" data-source-pane="file">
       <p class="hint">Подойдёт выгрузка из любого трекера. Метрики считаются
          по статусам и датам, поэтому заголовки и описания не нужны.</p>
 
@@ -432,10 +438,55 @@ PROJ-11,Bug,done,2026-01-16,2026-01-17,2026-01-19</pre>
       </label>
 
       <div id="import-result"></div>
-    </div>
 
       <div class="import-actions">
         <button id="import-submit">Загрузить</button>
+      </div>
+      </div>
+
+      <div class="source-pane" data-source-pane="jira" hidden>
+        <p class="hint">Подключение проверяется сразу: FlowLens спросит у Jira
+           список статусов и сам найдёт поля с датами начала и конца работы.
+           Токен нигде не сохраняется — он живёт только на время выгрузки.</p>
+
+        <label class="field">
+          <span>Адрес Jira</span>
+          <input type="url" id="jira-url" placeholder="https://jira.example.com">
+        </label>
+        <label class="field">
+          <span>Personal Access Token</span>
+          <input type="password" id="jira-token" placeholder="для Data Center — PAT">
+        </label>
+
+        <div class="import-actions">
+          <button id="jira-check" class="ghost">Проверить подключение</button>
+        </div>
+
+        <div id="jira-check-result"></div>
+
+        <div id="jira-config" hidden>
+          <label class="field">
+            <span>JQL — какие задачи собирать</span>
+            <input type="text" id="jira-jql" value="created >= -180d ORDER BY created DESC">
+          </label>
+          <p class="hint">Глубина истории задаётся здесь. За полгода выгрузка
+             идёт заметно быстрее, чем за всё время, а метрикам этого хватает.</p>
+
+          <h3>Поля с заявленными датами</h3>
+          <p class="hint">Их проставляют вручную, и они часто расходятся
+             с историей статусов — FlowLens сохранит и то, и другое,
+             а расхождения покажет на вкладке «Качество данных».</p>
+          <div id="jira-fields"></div>
+
+          <label class="import-replace">
+            <input type="checkbox" id="jira-replace">
+            Заменить текущие данные
+          </label>
+          <div class="import-actions">
+            <button id="jira-sync">Выгрузить</button>
+          </div>
+          <div id="jira-sync-result"></div>
+        </div>
       </div>
     </div>
   </div>

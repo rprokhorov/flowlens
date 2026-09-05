@@ -1087,6 +1087,150 @@ function renderPredictability(data) {
   }, true);
 }
 
+const FIELD_PURPOSES = {
+  work_start: 'Дата начала работы',
+  work_end: 'Дата завершения',
+  story_points: 'Оценка (story points)',
+  epic_link: 'Связь с эпиком',
+};
+
+let jiraGuesses = [];
+
+function switchSource(name) {
+  for (const tab of document.querySelectorAll('.source-tab')) {
+    tab.classList.toggle('active', tab.dataset.source === name);
+  }
+  for (const pane of document.querySelectorAll('.source-pane')) {
+    pane.hidden = pane.dataset.sourcePane !== name;
+  }
+}
+
+function renderFieldGuesses(guesses) {
+  jiraGuesses = guesses;
+  const container = document.getElementById('jira-fields');
+  container.innerHTML = guesses.map(guess => {
+    // выбранное поле всегда среди вариантов, даже если совпадение частичное
+    const options = [{ id: '', name: '— не использовать —' }, ...guess.candidates];
+    if (guess.field_id && !options.some(o => o.id === guess.field_id)) {
+      options.push({ id: guess.field_id, name: guess.field_name });
+    }
+    const mark = guess.confidence === 'exact' ? 'найдено точно'
+      : guess.confidence === 'partial' ? 'похоже — проверьте'
+      : 'не найдено';
+    return `
+      <div class="field-guess">
+        <label for="guess-${guess.purpose}">${FIELD_PURPOSES[guess.purpose] || guess.purpose}</label>
+        <div>
+          <select id="guess-${guess.purpose}" data-purpose="${guess.purpose}">
+            ${options.map(option => `
+              <option value="${escapeHtml(option.id)}"
+                ${option.id === (guess.field_id || '') ? 'selected' : ''}>
+                ${escapeHtml(option.name)}${option.id ? ` (${option.id})` : ''}
+              </option>`).join('')}
+          </select>
+          <span class="guess-mark">${mark}</span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function jiraCredentials() {
+  return {
+    base_url: document.getElementById('jira-url').value.trim(),
+    token: document.getElementById('jira-token').value.trim() || null,
+  };
+}
+
+async function checkJira() {
+  const button = document.getElementById('jira-check');
+  const result = document.getElementById('jira-check-result');
+  const credentials = jiraCredentials();
+
+  if (!credentials.base_url) {
+    result.textContent = 'Укажите адрес Jira.';
+    return;
+  }
+
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Проверяю…';
+  result.textContent = 'Подключаюсь и читаю список полей…';
+
+  try {
+    const response = await fetch('/api/jira/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      result.textContent = `Не получилось: ${data.detail || response.statusText}`;
+      document.getElementById('jira-config').hidden = true;
+      return;
+    }
+
+    result.innerHTML = `Подключились как <b>${escapeHtml(data.user || 'неизвестно')}</b>. `
+      + `Статусов на доске: ${data.statuses.length}.`;
+    renderFieldGuesses(data.guesses);
+    document.getElementById('jira-config').hidden = false;
+  } catch (error) {
+    result.textContent = `Не получилось: ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
+async function syncJira() {
+  const button = document.getElementById('jira-sync');
+  const result = document.getElementById('jira-sync-result');
+  const replace = document.getElementById('jira-replace').checked;
+
+  if (replace && !window.confirm('Текущие данные будут заменены. Продолжить?')) return;
+
+  const mapping = {};
+  for (const select of document.querySelectorAll('#jira-fields select')) {
+    if (select.value) mapping[select.dataset.purpose] = select.value;
+  }
+
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Выгружаю…';
+  result.textContent = 'Забираю задачи и историю изменений. На больших проектах это небыстро.';
+
+  try {
+    const response = await fetch('/api/jira/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...jiraCredentials(),
+        jql: document.getElementById('jira-jql').value.trim(),
+        mapping,
+        replace_existing: replace,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      result.textContent = `Не получилось: ${data.detail || response.statusText}`;
+      return;
+    }
+
+    result.innerHTML = `Загружено ${data.tickets} `
+      + `${plural(data.tickets, 'задача', 'задачи', 'задач')} и ${data.events} `
+      + `${plural(data.events, 'событие', 'события', 'событий')}.`
+      + '<br><br>Чтобы обновлять по расписанию, сохраните это в <code>jira.yml</code> '
+      + 'и запускайте <code>flowlens sync --config jira.yml</code> — токен '
+      + 'подставится из переменной окружения:'
+      + `<pre class="sample">${escapeHtml(data.config_yaml)}</pre>`;
+    invalidateAll();
+  } catch (error) {
+    result.textContent = `Не получилось: ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
 function openImport() {
   document.getElementById('import-result').innerHTML = '';
   document.getElementById('import-modal').hidden = false;
@@ -2281,6 +2425,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('export-btn').addEventListener('click', exportSlice);
   document.getElementById('import-btn').addEventListener('click', openImport);
   document.getElementById('import-submit').addEventListener('click', submitImport);
+  document.getElementById('jira-check').addEventListener('click', checkJira);
+  document.getElementById('jira-sync').addEventListener('click', syncJira);
+  for (const tab of document.querySelectorAll('.source-tab')) {
+    tab.addEventListener('click', () => switchSource(tab.dataset.source));
+  }
   for (const element of document.querySelectorAll('[data-close-import]')) {
     element.addEventListener('click', closeImport);
   }
