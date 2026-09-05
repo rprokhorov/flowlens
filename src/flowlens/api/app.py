@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine, text
@@ -184,6 +184,42 @@ def get_predictability(
 ) -> dict[str, Any]:
     """Отношение хвоста времени цикла к медиане по периодам."""
     return analytics.predictability(engine, filters, granularity)
+
+
+@app.get("/api/export")
+def get_export(
+    engine: EngineDep,
+    filters: FiltersDep,
+    full: Annotated[bool, Query(description="Не обезличивать данные")] = False,
+) -> Response:
+    """Выгрузить текущий срез в файл контракта.
+
+    По умолчанию обезличено: ключи и имена — устойчивые псевдонимы, заголовки
+    убраны. Метрики от этого не меняются, а файл можно отдать наружу.
+    """
+    import tempfile
+
+    from flowlens.export import export_tickets
+
+    with tempfile.NamedTemporaryFile(suffix=".ndjson", delete=False) as handle:
+        path = Path(handle.name)
+    try:
+        stats = export_tickets(engine, filters, path, anonymize=not full)
+        payload = path.read_bytes()
+    finally:
+        path.unlink(missing_ok=True)
+
+    suffix = "full" if full else "anon"
+    stamp = date.today().isoformat()
+    return Response(
+        content=payload,
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": f'attachment; filename="flowlens-{stamp}-{suffix}.ndjson"',
+            "X-Flowlens-Tickets": str(stats.tickets),
+            "X-Flowlens-Events": str(stats.events),
+        },
+    )
 
 
 @app.get("/api/people")

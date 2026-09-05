@@ -97,6 +97,7 @@ function filterParams() {
   if (get('f-priority')) params.set('priority', get('f-priority'));
   if (get('f-component')) params.set('component', get('f-component'));
   if (get('f-confidence') !== 'low') params.set('min_confidence', get('f-confidence'));
+  if (get('f-completion') !== 'terminal') params.set('completion', get('f-completion'));
   params.set('unit', unit);
   return params;
 }
@@ -1021,11 +1022,118 @@ async function fixSle() {
   }
 }
 
+function renderPredictability(data) {
+  const chart = ensureChart('chart-predictability');
+  const hint = document.getElementById('predictability-hint');
+  if (!chart) return;
+
+  const known = data.index.filter(value => value != null);
+  if (hint) {
+    if (!known.length) {
+      hint.textContent = `Нужно хотя бы ${data.min_sample} завершённых задач за период: `
+        + 'на меньшей выборке верхние 2% — это одна-две задачи, а не свойство системы.';
+    } else {
+      const latest = known[known.length - 1];
+      const verdict = latest < 3 ? 'Разброс рабочий, по медиане можно ориентироваться.'
+        : latest < 6 ? 'Разброс заметный: обещать стоит по 85-му перцентилю, не по медиане.'
+        : 'Разброс очень велик — фраза «в среднем столько-то» здесь ничего не значит.';
+      hint.textContent = `Во сколько раз самые долгие задачи (верхние 2%) идут дольше `
+        + `типичных. Сейчас — в ${latest.toFixed(1)} раза. ${verdict}`;
+    }
+  }
+  if (!data.periods.length) return emptyChart(chart, 'Нет завершённых задач за период');
+
+  chart.setOption({
+    ...baseOption(),
+    tooltip: {
+      ...baseOption().tooltip, trigger: 'axis',
+      formatter: params => {
+        const detail = data.details[params[0].dataIndex];
+        if (!detail.reliable) {
+          return `${formatDay(detail.period)}<br>задач: ${detail.count}`
+            + `<br><i>мало данных для оценки</i>`;
+        }
+        return `${formatDay(detail.period)}<br>`
+          + `индекс: ${detail.index}<br>`
+          + `медиана: ${hours(detail.p50_s)}<br>`
+          + `верхние 2%: ${hours(detail.p98_s)}<br>`
+          + `задач: ${detail.count}`;
+      },
+    },
+    xAxis: { type: 'category', data: data.periods.map(formatDay), ...axisStyle() },
+    yAxis: { type: 'value', min: 1, ...axisStyle(),
+      axisLabel: { ...axisStyle().axisLabel, formatter: '×{value}' } },
+    series: [{
+      type: 'line', smooth: false, symbolSize: 7, connectNulls: false,
+      data: data.index,
+      lineStyle: { color: css('--series-1'), width: 2 },
+      itemStyle: {
+        color: params => params.value == null ? css('--series-4')
+          : params.value < 3 ? css('--status-good')
+          : params.value < 6 ? css('--status-warning') : css('--status-critical'),
+      },
+      markLine: {
+        silent: true, symbol: 'none',
+        data: [
+          { yAxis: 3, lineStyle: { color: css('--status-good'), type: 'dashed' },
+            label: { formatter: 'предсказуемо', position: 'insideStartTop',
+              color: css('--status-good'), fontSize: 11 } },
+          { yAxis: 6, lineStyle: { color: css('--status-critical'), type: 'dashed' },
+            label: { formatter: 'медиана не значит ничего', position: 'insideStartTop',
+              color: css('--status-critical'), fontSize: 11 } },
+        ],
+      },
+    }],
+  }, true);
+}
+
+async function exportSlice() {
+  const button = document.getElementById('export-btn');
+  const full = window.confirm(
+    'Выгрузить как есть — с ключами задач, заголовками и именами людей?\n\n'
+    + 'OK — полный файл: он уносит эти данные за пределы вашего контура.\n'
+    + 'Отмена — обезличенный: ключи и имена заменяются псевдонимами, '
+    + 'заголовки убираются. Метрики одинаковые в обоих случаях.'
+  );
+
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Готовлю файл…';
+  try {
+    const params = filterParams();
+    if (full) params.set('full', 'true');
+    const response = await fetch(`/api/export?${params}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const blob = await response.blob();
+    const name = (response.headers.get('Content-Disposition') || '')
+      .match(/filename="([^"]+)"/)?.[1] || 'flowlens-export.ndjson';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    const tickets = response.headers.get('X-Flowlens-Tickets');
+    button.textContent = `Готово: ${tickets} задач`;
+    setTimeout(() => { button.textContent = previous; }, 2500);
+  } catch (error) {
+    console.error(error);
+    button.textContent = 'Не получилось';
+    setTimeout(() => { button.textContent = previous; }, 2500);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadSle() {
-  const [sle, classes] = await Promise.all([
+  const [sle, classes, predictable] = await Promise.all([
     fetchJson('/api/sle'),
     fetchJson('/api/service-classes', { granularity: 'month' }),
+    fetchJson('/api/predictability', { granularity: 'month' }),
   ]);
+  renderPredictability(predictable);
   renderPromises(sle);
   renderSleAttainment(sle);
   renderExpedite(classes);
@@ -1676,6 +1784,29 @@ async function openChartData(kind) {
           </table>`,
       };
     },
+    predictability: async () => {
+      const data = await fetchJson('/api/predictability', { granularity: 'month' });
+      return {
+        title: `Предсказуемость: индекс ${data.latest ?? '—'}`,
+        html: `
+          <p class="section-note">Отношение верхних 2% времени цикла к медиане.
+             Периоды с выборкой меньше ${data.min_sample} задач не оцениваются:
+             там этот показатель описывает один выброс, а не систему.</p>
+          <table>
+            <thead><tr><th>Период</th><th class="num">Индекс</th>
+              <th class="num">Медиана</th><th class="num">Верхние 2%</th>
+              <th class="num">Задач</th></tr></thead>
+            <tbody>${data.details.map(d => `
+              <tr>
+                <td>${formatDay(d.period)}</td>
+                <td class="num">${d.index != null ? '×' + d.index : '—'}</td>
+                <td class="num">${hours(d.p50_s)}</td>
+                <td class="num">${hours(d.p98_s)}</td>
+                <td class="num">${d.count}</td>
+              </tr>`).reverse().join('')}</tbody>
+          </table>`,
+      };
+    },
     sle: async () => {
       const data = await fetchJson('/api/sle');
       if (!data.promises.length) {
@@ -2069,7 +2200,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 
   // фильтры
-  for (const id of ['f-from', 'f-to', 'f-type', 'f-priority', 'f-component', 'f-confidence']) {
+  for (const id of ['f-from', 'f-to', 'f-type', 'f-priority', 'f-component', 'f-confidence',
+                    'f-completion']) {
     document.getElementById(id).addEventListener('change', invalidateAll);
   }
   document.getElementById('u-business').addEventListener('click', () => setUnit('business'));
@@ -2087,6 +2219,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // разбор
   document.getElementById('explain-btn').addEventListener('click', requestExplanation);
   document.getElementById('sle-fix-btn').addEventListener('click', fixSle);
+  document.getElementById('export-btn').addEventListener('click', exportSlice);
 
   // таблица задач
   let searchTimer;

@@ -13,6 +13,8 @@
     <h1>FlowLens</h1>
     <span class="subtitle" id="period">—</span>
     <div class="spacer"></div>
+    <button id="export-btn" class="ghost"
+            title="Выгрузить текущий срез в файл — показать метрики без доступа к базе">Выгрузить срез</button>
     <button id="theme-toggle" title="Переключить тему">◐</button>
   </div>
 
@@ -43,6 +45,10 @@
     </select>
     <button id="u-business" class="active">Рабочие часы</button>
     <button id="u-calendar">Календарные</button>
+    <select id="f-completion" title="Где проходит граница «готово»">
+      <option value="terminal">Готово: до конца доски</option>
+      <option value="work_done">Готово: без ожидания релиза</option>
+    </select>
   </div>
 </header>
 
@@ -199,6 +205,15 @@
 
   <!-- ОБЕЩАНИЯ -->
   <section class="panel" data-panel="sle">
+    <div class="card">
+      <div class="card-head">
+        <h2>Можно ли вообще обещать</h2>
+        <button class="ghost" data-data-for="predictability">Данные</button>
+      </div>
+      <p class="hint" id="predictability-hint"></p>
+      <div class="chart" id="chart-predictability"></div>
+    </div>
+
     <div class="card">
       <div class="card-head">
         <h2>Действующие обещания</h2>
