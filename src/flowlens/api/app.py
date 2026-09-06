@@ -6,17 +6,28 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import Engine, text
 
-from flowlens import analytics
+from flowlens import analytics, auth
 from flowlens.analytics import Filters
 from flowlens.core.advice import analyse
 from flowlens.core.quality import build_report
@@ -95,8 +106,121 @@ def get_filters(
     )
 
 
-FiltersDep = Annotated[Filters, Depends(get_filters)]
+def scoped_filters(
+    request: Request,
+    filters: Annotated[Filters, Depends(get_filters)],
+) -> Filters:
+    """Сузить запрос правами пользователя.
+
+    Проверка здесь, а не в каждом обработчике: аналитических эндпоинтов много,
+    и забыть один из них означало бы отдать чужие данные. Единая точка делает
+    это невозможным.
+    """
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    if user.is_admin:
+        return filters
+
+    if filters.team_id is not None:
+        if not user.can_view(filters.team_id):
+            raise HTTPException(status_code=403, detail="Нет доступа к этой команде")
+        return filters
+
+    # Без явной команды показываем единственную доступную. Молча сводить
+    # несколько команд в одну сводку нельзя: это выдало бы чужие метрики
+    # под видом общих.
+    visible = user.visible_teams
+    if not visible:
+        raise HTTPException(status_code=403, detail="Вам не назначена ни одна команда")
+    if len(visible) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите команду: вам доступно несколько",
+        )
+    return replace(filters, team_id=visible[0])
+
+
+FiltersDep = Annotated[Filters, Depends(scoped_filters)]
 EngineDep = Annotated[Engine, Depends(get_engine)]
+
+
+# --- авторизация -------------------------------------------------------------
+
+# Открытые пути: всё остальное закрыто. Список именно разрешающий — новый
+# эндпоинт по умолчанию защищён, и забыть его закрыть невозможно.
+PUBLIC_PATHS = frozenset({"/api/health", "/login", "/static", "/favicon.ico"})
+
+
+def _is_public(path: str) -> bool:
+    return any(path == item or path.startswith(item + "/") for item in PUBLIC_PATHS)
+
+
+def current_user(request: Request) -> auth.User:
+    """Пользователь текущего запроса.
+
+    Проставляется middleware; сюда попадает уже проверенным.
+    """
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Требуется вход")
+    return user
+
+
+UserDep = Annotated[auth.User, Depends(current_user)]
+
+
+def require_team_view(user: auth.User, team_id: int | None) -> None:
+    """Проверить доступ к данным команды."""
+    if not user.can_view(team_id):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой команде")
+
+
+def require_team_manage(user: auth.User, team_id: int | None) -> None:
+    """Проверить право настраивать команду."""
+    if not user.can_manage(team_id):
+        raise HTTPException(
+            status_code=403, detail="Настраивать команду может её владелец или администратор"
+        )
+
+
+@app.middleware("http")
+async def authenticate_request(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Проверить вход до того, как запрос дойдёт до обработчика."""
+    if auth.auth_disabled() or _is_public(request.url.path):
+        request.state.user = auth.ANONYMOUS
+        return await call_next(request)
+
+    header = request.headers.get("Authorization", "")
+    user = None
+    if header.startswith("Basic "):
+        import base64
+        import binascii
+
+        try:
+            decoded = base64.b64decode(header[6:]).decode()
+            username, _, password = decoded.partition(":")
+            user = auth.authenticate(get_engine(), username, password)
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            user = None
+
+    if user is None:
+        return Response(
+            content='{"detail":"Требуется вход"}',
+            status_code=401,
+            media_type="application/json",
+            # браузер сам покажет форму входа — отдельная страница не нужна
+            headers={"WWW-Authenticate": 'Basic realm="FlowLens"'},
+        )
+
+    request.state.user = user
+    return await call_next(request)
+
+
+@app.get("/api/me")
+def get_me(user: UserDep) -> dict[str, Any]:
+    """Кто вошёл и что ему доступно — для интерфейса."""
+    return {**user.as_dict(), "auth_disabled": auth.auth_disabled()}
 
 
 @app.get("/api/health")
@@ -456,8 +580,11 @@ def post_jira_sync(engine: EngineDep, request: JiraSyncRequest) -> dict[str, Any
 
 
 @app.get("/api/teams")
-def get_teams(engine: EngineDep) -> list[dict[str, Any]]:
-    """Команды с числом задач — для переключателя в дашборде."""
+def get_teams(engine: EngineDep, user: UserDep) -> list[dict[str, Any]]:
+    """Команды с числом задач — для переключателя в дашборде.
+
+    Показываются только доступные: чужие названия тоже информация.
+    """
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -476,18 +603,21 @@ def get_teams(engine: EngineDep) -> list[dict[str, Any]]:
             "calendar": r.calendar,
             "tz": r.tz,
             "tickets": r.tickets,
+            "can_manage": user.can_manage(r.id),
         }
         for r in rows
+        if user.can_view(r.id)
     ]
 
 
 @app.get("/api/teams/{team_id}/statuses")
-def get_team_statuses(engine: EngineDep, team_id: int) -> list[dict[str, Any]]:
+def get_team_statuses(engine: EngineDep, user: UserDep, team_id: int) -> list[dict[str, Any]]:
     """Как команда классифицирует статусы своей доски.
 
     От этого зависят flow efficiency, время по фазам и WIP: статус, помеченный
     активной работой, попадает в touch time, а помеченный очередью — в ожидание.
     """
+    require_team_view(user, team_id)
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -511,7 +641,9 @@ class StatusUpdate(BaseModel):
 
 
 @app.patch("/api/statuses/{status_id}")
-def patch_status(engine: EngineDep, status_id: int, update: StatusUpdate) -> dict[str, Any]:
+def patch_status(
+    engine: EngineDep, user: UserDep, status_id: int, update: StatusUpdate
+) -> dict[str, Any]:
     """Изменить классификацию статуса и пересчитать метрики.
 
     Пересчёт обязателен: интервалы и все производные метрики зависят от того,
@@ -519,6 +651,15 @@ def patch_status(engine: EngineDep, status_id: int, update: StatusUpdate) -> dic
     под новой настройкой — худший вид расхождения, потому что незаметный.
     """
     from flowlens.pipeline import recompute_all
+
+    with engine.begin() as conn:
+        owner_team = conn.execute(
+            text("SELECT team_id FROM workflow_status WHERE id = :id"),
+            {"id": status_id},
+        ).scalar_one_or_none()
+    if owner_team is None:
+        raise HTTPException(status_code=404, detail="Статус не найден")
+    require_team_manage(user, owner_team)
 
     changes = {k: v for k, v in update.model_dump().items() if v is not None}
     if not changes:
@@ -562,12 +703,16 @@ class TeamSourceRequest(BaseModel):
 
 @app.get("/api/sources")
 def get_sources(
-    engine: EngineDep, team_id: Annotated[int | None, Query()] = None
+    engine: EngineDep, user: UserDep, team_id: Annotated[int | None, Query()] = None
 ) -> dict[str, Any]:
     """Настроенные подключения. Токены не отдаются никогда."""
     from flowlens import secrets, sources
 
-    items = sources.list_sources(engine, team_id)
+    items = [
+        item
+        for item in sources.list_sources(engine, team_id)
+        if user.can_manage(item.team_id)
+    ]
     return {
         "sources": [
             {**item.as_dict(), "next_run_at": (
@@ -583,10 +728,13 @@ def get_sources(
 
 
 @app.post("/api/sources")
-def post_source(engine: EngineDep, request: TeamSourceRequest) -> dict[str, Any]:
+def post_source(
+    engine: EngineDep, user: UserDep, request: TeamSourceRequest
+) -> dict[str, Any]:
     """Сохранить подключение команды."""
     from flowlens import secrets, sources
 
+    require_team_manage(user, request.team_id)
     if request.token and not secrets.available():
         raise HTTPException(
             status_code=422,
@@ -613,10 +761,15 @@ def post_source(engine: EngineDep, request: TeamSourceRequest) -> dict[str, Any]
 
 
 @app.delete("/api/sources/{source_id}")
-def delete_source_endpoint(engine: EngineDep, source_id: int) -> dict[str, Any]:
+def delete_source_endpoint(
+    engine: EngineDep, user: UserDep, source_id: int
+) -> dict[str, Any]:
     """Удалить подключение. Загруженные данные остаются."""
     from flowlens import sources
 
+    existing = sources.get_source(engine, source_id)
+    if existing is not None:
+        require_team_manage(user, existing.team_id)
     if not sources.delete_source(engine, source_id):
         raise HTTPException(status_code=404, detail="Подключение не найдено")
     return {"deleted": source_id}
@@ -625,6 +778,7 @@ def delete_source_endpoint(engine: EngineDep, source_id: int) -> dict[str, Any]:
 @app.post("/api/sources/{source_id}/sync")
 def post_source_sync(
     engine: EngineDep,
+    user: UserDep,
     source_id: int,
     full: Annotated[bool, Query(description="Выгрузить заново, игнорируя watermark")] = False,
 ) -> dict[str, Any]:
@@ -634,6 +788,7 @@ def post_source_sync(
     source = sources.get_source(engine, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Подключение не найдено")
+    require_team_manage(user, source.team_id)
     if not source.has_secret:
         raise HTTPException(status_code=422, detail="У подключения не задан токен")
 

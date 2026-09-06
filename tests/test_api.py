@@ -12,7 +12,10 @@ from flowlens.pipeline import recompute_all, seed_demo
 
 
 @pytest.fixture(scope="module")
-def client():
+def client(monkeypatch_module):
+    # эти тесты проверяют содержимое ответов, а не вход; авторизация
+    # проверяется отдельно в test_auth_db.py
+    monkeypatch_module.setenv("FLOWLENS_AUTH_DISABLED", "1")
     try:
         engine = make_engine()
         with engine.begin() as conn:
@@ -26,6 +29,16 @@ def client():
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    """monkeypatch на весь модуль: штатный работает только внутри теста."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    patcher = MonkeyPatch()
+    yield patcher
+    patcher.undo()
 
 
 def assert_numeric(value, name: str) -> None:

@@ -672,6 +672,93 @@ def sources_command(
             typer.echo("     токен не задан — синхронизация невозможна")
 
 
+@app.command("users")
+def users_command(
+    add: Annotated[str | None, typer.Option(help="Создать пользователя с этим логином")] = None,
+    password: Annotated[str | None, typer.Option(help="Пароль (иначе спросим)")] = None,
+    admin: Annotated[bool, typer.Option("--admin", help="Права администратора")] = False,
+    grant: Annotated[
+        str | None, typer.Option(help="Выдать доступ: логин:команда:роль")
+    ] = None,
+    revoke: Annotated[str | None, typer.Option(help="Отобрать доступ: логин:команда")] = None,
+    delete: Annotated[str | None, typer.Option(help="Удалить пользователя")] = None,
+) -> None:
+    """Пользователи и их права на команды."""
+    from flowlens import auth
+
+    engine = make_engine()
+
+    if add:
+        secret = password or typer.prompt("Пароль", hide_input=True, confirmation_prompt=True)
+        user = auth.create_user(engine, username=add, password=secret, is_admin=admin)
+        role = "администратор" if user.is_admin else "пользователь"
+        typer.echo(f"Создан {role} {user.username}.")
+        if not admin:
+            typer.echo("Выдать доступ: flowlens users --grant логин:команда:owner")
+        return
+
+    if grant:
+        try:
+            username, team, role = grant.split(":", 2)
+        except ValueError:
+            typer.echo("Формат: --grant логин:команда:роль (viewer или owner)")
+            raise typer.Exit(code=1) from None
+        user = auth.get_user(engine, username)
+        if user is None:
+            typer.echo(f"Нет пользователя {username}")
+            raise typer.Exit(code=1)
+        try:
+            auth.grant_access(engine, user_id=user.id, team_id=int(team), role=role)
+        except ValueError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"{username} получил доступ к команде {team} как {role}.")
+        return
+
+    if revoke:
+        username, _, team = revoke.partition(":")
+        user = auth.get_user(engine, username)
+        if user is None or not auth.revoke_access(engine, user_id=user.id, team_id=int(team)):
+            typer.echo("Такого доступа нет.")
+            raise typer.Exit(code=1)
+        typer.echo(f"Доступ {username} к команде {team} отозван.")
+        return
+
+    if delete:
+        if auth.delete_user(engine, delete):
+            typer.echo(f"Пользователь {delete} удалён.")
+        else:
+            typer.echo(f"Нет пользователя {delete}")
+            raise typer.Exit(code=1)
+        return
+
+    people = auth.list_users(engine)
+    if not people:
+        typer.echo("Пользователей нет. Создать: flowlens users --add логин --admin")
+        if auth.auth_disabled():
+            typer.echo(
+                f"Сейчас вход отключён ({auth.ENV_AUTH_DISABLED}=1) — "
+                "сервис открыт всем, кто знает адрес."
+            )
+        return
+
+    for user in people:
+        marks = []
+        if user.is_admin:
+            marks.append("администратор")
+        if not user.is_active:
+            marks.append("отключён")
+        if user.external_subject:
+            marks.append("SSO")
+        suffix = f"  [{', '.join(marks)}]" if marks else ""
+        typer.echo(f"{user.username}{suffix}")
+        if user.teams:
+            for team_id, role in sorted(user.teams.items()):
+                typer.echo(f"     команда {team_id}: {role}")
+        elif not user.is_admin:
+            typer.echo("     нет доступа ни к одной команде")
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Адрес")] = "127.0.0.1",

@@ -59,6 +59,11 @@ services:
       FLOWLENS_SECRET_KEY: ${FLOWLENS_SECRET_KEY:-local-development-key}
       # Фоновое обновление по расписанию; выключено по умолчанию
       FLOWLENS_SCHEDULER: ${FLOWLENS_SCHEDULER:-0}
+      # Локальный запуск — без пароля. На сервере уберите эту строку
+      # и задайте FLOWLENS_ADMIN_USER / FLOWLENS_ADMIN_PASSWORD.
+      FLOWLENS_AUTH_DISABLED: ${FLOWLENS_AUTH_DISABLED:-1}
+      FLOWLENS_ADMIN_USER: ${FLOWLENS_ADMIN_USER:-}
+      FLOWLENS_ADMIN_PASSWORD: ${FLOWLENS_ADMIN_PASSWORD:-}
     ports:
       - "8000:8000"
     depends_on:
