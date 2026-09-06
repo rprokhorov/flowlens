@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import os
 import secrets as stdlib_secrets
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -228,12 +229,70 @@ def delete_user(engine: Engine, username: str) -> bool:
     return result.rowcount > 0
 
 
+# --- защита от подбора -------------------------------------------------------
+
+# Счётчики живут в памяти процесса, а не в базе: запись на каждую неудачную
+# попытку сама превратилась бы в способ нагрузить сервис. Потеря счётчиков
+# при перезапуске приемлема — подбор занимает намного больше времени.
+_MAX_ATTEMPTS = 10
+_LOCKOUT_SECONDS = 300
+_attempts: dict[str, list[float]] = {}
+
+
+def _prune(key: str, now: float) -> list[float]:
+    recent = [t for t in _attempts.get(key, []) if now - t < _LOCKOUT_SECONDS]
+    if recent:
+        _attempts[key] = recent
+    else:
+        _attempts.pop(key, None)
+    return recent
+
+
+def is_locked(username: str, now: float | None = None) -> bool:
+    """Заблокирован ли вход после серии неудач."""
+    moment = now if now is not None else time.monotonic()
+    return len(_prune(username, moment)) >= _MAX_ATTEMPTS
+
+
+def seconds_until_unlock(username: str, now: float | None = None) -> int:
+    """Через сколько можно пробовать снова — чтобы сказать это человеку."""
+    moment = now if now is not None else time.monotonic()
+    recent = _prune(username, moment)
+    if len(recent) < _MAX_ATTEMPTS:
+        return 0
+    return max(1, int(_LOCKOUT_SECONDS - (moment - min(recent))))
+
+
+def note_failure(username: str, now: float | None = None) -> None:
+    moment = now if now is not None else time.monotonic()
+    _attempts.setdefault(username, []).append(moment)
+
+
+def reset_attempts(username: str) -> None:
+    """Успешный вход снимает блокировку: человек вспомнил пароль."""
+    _attempts.pop(username, None)
+
+
+class TooManyAttempts(RuntimeError):
+    """Слишком много неудачных попыток подряд."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(f"Слишком много попыток. Повторите через {retry_after} с.")
+        self.retry_after = retry_after
+
+
 def authenticate(engine: Engine, username: str, password: str) -> User | None:
     """Проверить логин и пароль.
 
     Хеш считается даже для несуществующего пользователя: иначе время ответа
     выдавало бы, какие логины заведены в системе.
+
+    После нескольких неудач подряд вход по этому логину временно закрывается —
+    иначе подбор пароля упирается только в скорость сети.
     """
+    if is_locked(username):
+        raise TooManyAttempts(seconds_until_unlock(username))
+
     with engine.begin() as conn:
         row = conn.execute(
             text(f"SELECT {_COLUMNS}, password_hash FROM app_user WHERE username = :name"),
@@ -243,7 +302,10 @@ def authenticate(engine: Engine, username: str, password: str) -> User | None:
     stored = row.password_hash if row else None
     matched = verify_password(password, stored)
     if not row or not matched or not row.is_active:
+        note_failure(username)
         return None
+
+    reset_attempts(username)
 
     with engine.begin() as conn:
         conn.execute(
@@ -321,6 +383,7 @@ __all__ = [
     "ENV_ADMIN_PASSWORD",
     "ENV_ADMIN_USER",
     "ENV_AUTH_DISABLED",
+    "TooManyAttempts",
     "User",
     "authenticate",
     "auth_disabled",
@@ -331,7 +394,11 @@ __all__ = [
     "get_user_by_subject",
     "grant_access",
     "hash_password",
+    "is_locked",
     "list_users",
+    "note_failure",
+    "reset_attempts",
+    "seconds_until_unlock",
     "revoke_access",
     "set_password",
     "verify_password",

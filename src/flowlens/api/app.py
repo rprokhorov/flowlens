@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -201,12 +202,21 @@ async def authenticate_request(request: Request, call_next):  # type: ignore[no-
             decoded = base64.b64decode(header[6:]).decode()
             username, _, password = decoded.partition(":")
             user = auth.authenticate(get_engine(), username, password)
+        except auth.TooManyAttempts as exc:
+            # 429, а не 401: браузер иначе снова покажет форму входа,
+            # человек введёт тот же пароль и решит, что сервис сломался
+            return Response(
+                content=json.dumps({"detail": str(exc)}, ensure_ascii=False),
+                status_code=429,
+                media_type="application/json",
+                headers={"Retry-After": str(exc.retry_after)},
+            )
         except (ValueError, binascii.Error, UnicodeDecodeError):
             user = None
 
     if user is None:
         return Response(
-            content='{"detail":"Требуется вход"}',
+            content=json.dumps({"detail": "Требуется вход"}, ensure_ascii=False),
             status_code=401,
             media_type="application/json",
             # браузер сам покажет форму входа — отдельная страница не нужна

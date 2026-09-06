@@ -320,3 +320,77 @@ def test_viewer_cannot_create_source(client, users) -> None:
         headers=basic("test-viewer", "viewer-pass"),
     )
     assert response.status_code == 403
+
+
+# --- защита от подбора -------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_attempts():
+    """Счётчики глобальны для процесса — иначе тесты влияли бы друг на друга."""
+    auth._attempts.clear()
+    yield
+    auth._attempts.clear()
+
+
+def test_lockout_after_repeated_failures(engine, users) -> None:
+    """Подбор пароля упирается во время, а не только в скорость сети."""
+    for _ in range(10):
+        assert auth.authenticate(engine, "test-admin", "wrong") is None
+
+    with pytest.raises(auth.TooManyAttempts):
+        auth.authenticate(engine, "test-admin", "wrong")
+
+
+def test_lockout_blocks_even_correct_password(engine, users) -> None:
+    """Иначе блокировка легко обходится: верный пароль как раз и подбирают."""
+    for _ in range(10):
+        auth.authenticate(engine, "test-admin", "wrong")
+
+    with pytest.raises(auth.TooManyAttempts):
+        auth.authenticate(engine, "test-admin", "admin-pass")
+
+
+def test_lockout_is_per_user(engine, users) -> None:
+    """Блокировка одного логина не должна закрывать вход остальным."""
+    for _ in range(10):
+        auth.authenticate(engine, "test-admin", "wrong")
+
+    assert auth.authenticate(engine, "test-owner", "owner-pass") is not None
+
+
+def test_success_resets_counter(engine, users) -> None:
+    """Человек вспомнил пароль — счётчик обнуляется."""
+    for _ in range(5):
+        auth.authenticate(engine, "test-admin", "wrong")
+    assert auth.authenticate(engine, "test-admin", "admin-pass") is not None
+    assert not auth.is_locked("test-admin")
+
+
+def test_lockout_expires(engine, users) -> None:
+    """Блокировка временная: забытый пароль не должен закрывать доступ навсегда."""
+    now = 1000.0
+    for _ in range(10):
+        auth.note_failure("test-admin", now)
+    assert auth.is_locked("test-admin", now)
+    assert not auth.is_locked("test-admin", now + auth._LOCKOUT_SECONDS + 1)
+
+
+def test_lockout_reports_retry_time(engine, users) -> None:
+    """Человеку нужно сказать, когда пробовать снова."""
+    now = 1000.0
+    for _ in range(10):
+        auth.note_failure("test-admin", now)
+    remaining = auth.seconds_until_unlock("test-admin", now + 60)
+    assert 0 < remaining <= auth._LOCKOUT_SECONDS
+
+
+def test_http_returns_429_when_locked(client, users) -> None:
+    """429, а не 401: иначе браузер снова покажет форму и человек решит,
+    что сервис сломался."""
+    for _ in range(10):
+        client.get("/api/summary", headers=basic("test-admin", "wrong"))
+
+    response = client.get("/api/summary", headers=basic("test-admin", "admin-pass"))
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) > 0
