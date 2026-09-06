@@ -109,8 +109,10 @@ CREATE TABLE workflow_status (
     board_order    int                     -- порядок колонок для CFD
 );
 
-CREATE UNIQUE INDEX workflow_status_team_idx
-    ON workflow_status (source_id, team_id, external_name) WHERE team_id IS NOT NULL;
+-- Классификация принадлежит команде, а не источнику: если команда тянет
+-- данные и из Jira, и из CSV, `qa` для неё означает одно и то же.
+CREATE UNIQUE INDEX workflow_status_team_name_idx
+    ON workflow_status (team_id, external_name) WHERE team_id IS NOT NULL;
 CREATE UNIQUE INDEX workflow_status_default_idx
     ON workflow_status (source_id, external_name) WHERE team_id IS NULL;
 

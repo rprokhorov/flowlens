@@ -269,8 +269,10 @@ def _load_statuses(engine: Engine, source_id: int, team_id: int) -> dict[str, in
     with engine.begin() as conn:
         rows = conn.execute(
             text(
+                # источник не участвует: классификация принадлежит команде,
+                # а не тому, откуда приехали данные
                 "SELECT external_name, id, team_id FROM workflow_status "
-                "WHERE source_id = :src AND (team_id = :team OR team_id IS NULL) "
+                "WHERE team_id = :team OR (team_id IS NULL AND source_id = :src) "
                 "ORDER BY (team_id IS NULL)"
             ),
             {"src": source_id, "team": team_id},
@@ -317,7 +319,7 @@ def _ensure_status(
             "        :terminal, :ord) "
             # существующую строку не трогаем: команда могла перенастроить фазу
             # руками, и синхронизация не должна возвращать значение по умолчанию
-            "ON CONFLICT (source_id, team_id, external_name) WHERE team_id IS NOT NULL "
+            "ON CONFLICT (team_id, external_name) WHERE team_id IS NOT NULL "
             "DO UPDATE "
             "SET external_name = workflow_status.external_name RETURNING id"
         ),

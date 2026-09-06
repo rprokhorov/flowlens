@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import text
 
@@ -180,7 +182,7 @@ def test_teams_classify_same_status_differently(data) -> None:
                 "(source_id, team_id, external_name, phase, is_active_work, "
                 " is_queue, is_terminal, board_order) "
                 "VALUES (:src, :team, 'qa', 'verify', false, true, false, 4) "
-                "ON CONFLICT (source_id, team_id, external_name) "
+                "ON CONFLICT (team_id, external_name) "
                 "WHERE team_id IS NOT NULL DO NOTHING"
             ),
             {"src": source_id, "team": team_b},
@@ -193,3 +195,73 @@ def test_teams_classify_same_status_differently(data) -> None:
         with data.begin() as conn:
             conn.execute(text("DELETE FROM workflow_status WHERE team_id = :t"), {"t": team_b})
             conn.execute(text("DELETE FROM team WHERE id = :t"), {"t": team_b})
+
+
+def test_one_status_row_per_team_and_name(data) -> None:
+    """Команда, тянущая данные из двух источников, не должна получать дубли.
+
+    Раньше уникальность включала source_id, поэтому импорт из второго
+    источника создавал вторую строку для того же `qa`: в интерфейсе она
+    дублировалась, а правка одной оставляла вторую нетронутой.
+    """
+    with data.begin() as conn:
+        duplicates = conn.execute(
+            text(
+                "SELECT team_id, external_name, count(*) AS n "
+                "FROM workflow_status WHERE team_id IS NOT NULL "
+                "GROUP BY team_id, external_name HAVING count(*) > 1"
+            )
+        ).all()
+    assert not duplicates, f"дубли статусов: {[dict(r._mapping) for r in duplicates]}"
+
+
+def test_second_source_reuses_team_statuses(data) -> None:
+    """Импорт из другого источника переиспользует статусы команды."""
+    from flowlens.contract import RawEvent, RawTicket, SourceProfile
+    from flowlens.importer import import_tickets
+
+    with data.begin() as conn:
+        before = conn.execute(
+            text("SELECT count(*) FROM workflow_status WHERE team_id = 1")
+        ).scalar_one()
+
+    created = datetime(2026, 2, 2, 10, 0, tzinfo=UTC)
+    import_tickets(
+        data,
+        SourceProfile(source_kind="csv", source_name="second-source", changelog="full"),
+        [
+            RawTicket(
+                external_key="SECOND-1",
+                project_key="SECOND",
+                issue_type="Task",
+                status="in progress",
+                created_at=created,
+                events=[
+                    RawEvent(kind="created", occurred_at=created),
+                    RawEvent(
+                        kind="status_change",
+                        occurred_at=created + timedelta(hours=2),
+                        field="status",
+                        old_value="new",
+                        new_value="in progress",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    with data.begin() as conn:
+        after = conn.execute(
+            text("SELECT count(*) FROM workflow_status WHERE team_id = 1")
+        ).scalar_one()
+        conn.execute(text("DELETE FROM ticket WHERE external_key = 'SECOND-1'"))
+        # sync_run ссылается на источник, поэтому убирается раньше него
+        conn.execute(
+            text(
+                "DELETE FROM sync_run WHERE source_id = "
+                "(SELECT id FROM source WHERE name = 'second-source')"
+            )
+        )
+        conn.execute(text("DELETE FROM source WHERE name = 'second-source'"))
+
+    assert after == before, "второй источник не должен плодить статусы команды"

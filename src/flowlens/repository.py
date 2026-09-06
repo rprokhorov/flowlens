@@ -95,7 +95,7 @@ def ensure_reference_data(
                     " is_queue, is_terminal, board_order) "
                     "VALUES (:src, :team, :name, CAST(:phase AS canonical_phase), :active, "
                     "        :queue, :terminal, :ord) "
-                    "ON CONFLICT (source_id, team_id, external_name) "
+                    "ON CONFLICT (team_id, external_name) "
                     "WHERE team_id IS NOT NULL DO UPDATE "
                     "SET phase = EXCLUDED.phase, is_active_work = EXCLUDED.is_active_work "
                     "RETURNING id"
@@ -504,7 +504,7 @@ def load_board(engine: Engine, team_id: int) -> dict[str, StatusDef]:
                 "       is_queue, is_terminal, board_order, team_id "
                 "FROM workflow_status "
                 "WHERE team_id = :team OR team_id IS NULL "
-                "ORDER BY (team_id IS NULL)"
+                "ORDER BY (team_id IS NULL), id"
             ),
             {"team": team_id},
         ).all()
