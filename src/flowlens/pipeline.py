@@ -23,6 +23,7 @@ from flowlens.importer import assign_service_classes
 from flowlens.repository import (
     ensure_reference_data,
     insert_ticket,
+    load_board,
     load_calendar,
     load_declared_dates,
     reset_data,
@@ -168,6 +169,8 @@ def recompute_all(
     cal = load_calendar(engine, team_id)
     refs["calendar_id"] = _calendar_id(engine, team_id)
     refs["team_id"] = team_id
+    # классификация статусов команды: от неё зависит, что считается работой
+    board = load_board(engine, team_id)
 
     total_intervals = 0
     anomalous = 0
@@ -177,7 +180,7 @@ def recompute_all(
         events, comments = _load_ticket_history(engine, row.id)
         if not events:
             continue
-        intervals = build_intervals(events, cal, now=moment)
+        intervals = build_intervals(events, cal, now=moment, board=board)
         save_intervals(engine, row.id, intervals, refs)
         total_intervals += len(intervals)
 
@@ -188,6 +191,7 @@ def recompute_all(
             comments=comments,
             calendar=cal,
             reporter=(row.display_name or "").lower() or None,
+            board=board,
         )
         save_metrics(engine, row.id, metrics)
 

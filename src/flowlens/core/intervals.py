@@ -12,7 +12,7 @@ from datetime import datetime
 
 from flowlens.core.blockers import classify, clean_reason_text
 from flowlens.core.calendar import WorkCalendar
-from flowlens.core.domain import BOARD_BY_NAME, Event, EventKind, Phase
+from flowlens.core.domain import BOARD_BY_NAME, Event, EventKind, Phase, StatusDef
 
 
 @dataclass
@@ -42,6 +42,7 @@ def build_intervals(
     *,
     initial_status: str = "new",
     now: datetime | None = None,
+    board: dict[str, StatusDef] | None = None,
 ) -> list[Interval]:
     """Построить интервалы из упорядоченного списка событий.
 
@@ -53,6 +54,10 @@ def build_intervals(
     """
     if not events:
         raise ValueError("event list is empty")
+
+    # Классификация статусов задаётся на команду: у одной `qa` — работа,
+    # у другой очередь. По умолчанию берётся эталонная доска.
+    board = board or BOARD_BY_NAME
 
     ordered = sorted(events, key=lambda e: (e.occurred_at, _kind_rank(e.kind)))
     created = ordered[0]
@@ -83,6 +88,7 @@ def build_intervals(
                 started_at=started,
                 ended_at=at,
                 calendar=calendar,
+                board=board,
             )
         )
         started = at
@@ -94,9 +100,9 @@ def build_intervals(
             close(ev.occurred_at)
             previous = status
             status = ev.new_value
-            if _is_blocked(status):
+            if _is_blocked(status, board):
                 # запоминаем, откуда ушли в блокировку
-                blocked_from = previous if not _is_blocked(previous) else blocked_from
+                blocked_from = previous if not _is_blocked(previous, board) else blocked_from
             else:
                 blocked_from = None
                 blocker_reason = None
@@ -112,7 +118,7 @@ def build_intervals(
 
     # финальный интервал
     seq += 1
-    is_terminal = BOARD_BY_NAME[status].is_terminal
+    is_terminal = board[status].is_terminal
     intervals.append(
         _make_interval(
             seq=seq,
@@ -125,6 +131,7 @@ def build_intervals(
             calendar=calendar,
             open_until=now if not is_terminal else None,
             terminal=is_terminal,
+            board=board,
         )
     )
     return intervals
@@ -144,8 +151,8 @@ def _kind_rank(kind: EventKind) -> int:
     return order.get(kind, 3)
 
 
-def _is_blocked(status: str) -> bool:
-    return BOARD_BY_NAME[status].phase == Phase.BLOCKED
+def _is_blocked(status: str, board: dict[str, StatusDef] | None = None) -> bool:
+    return (board or BOARD_BY_NAME)[status].phase == Phase.BLOCKED
 
 
 def _make_interval(
@@ -160,8 +167,10 @@ def _make_interval(
     calendar: WorkCalendar,
     open_until: datetime | None = None,
     terminal: bool = False,
+    board: dict[str, StatusDef] | None = None,
 ) -> Interval:
-    blocked = _is_blocked(status)
+    board = board or BOARD_BY_NAME
+    blocked = _is_blocked(status, board)
     finish = ended_at or open_until
     if terminal:
         # терминальный статус завершает жизнь тикета: длительности нет
@@ -179,7 +188,7 @@ def _make_interval(
     return Interval(
         seq=seq,
         status=status,
-        phase=BOARD_BY_NAME[status].phase,
+        phase=board[status].phase,
         assignee=assignee,
         is_blocked=blocked,
         blocked_from_status=blocked_from if blocked else None,

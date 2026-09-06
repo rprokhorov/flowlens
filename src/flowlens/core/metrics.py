@@ -16,6 +16,7 @@ from flowlens.core.domain import (
     Event,
     EventKind,
     Phase,
+    StatusDef,
 )
 from flowlens.core.intervals import Interval
 
@@ -53,13 +54,19 @@ def compute_metrics(
     comments: list[Comment],
     calendar: WorkCalendar,
     reporter: str | None = None,
+    board: dict[str, StatusDef] | None = None,
 ) -> TicketMetrics:
-    """Посчитать метрики тикета."""
+    """Посчитать метрики тикета.
+
+    `board` задаёт классификацию статусов команды: от того, считается ли
+    статус активной работой, зависят touch time и эффективность потока.
+    """
+    board = board or BOARD_BY_NAME
     m = TicketMetrics()
 
     for iv in intervals:
         secs = iv.duration_business_s or 0
-        spec = BOARD_BY_NAME[iv.status]
+        spec = board[iv.status]
         if secs:
             m.time_by_status[iv.status] = m.time_by_status.get(iv.status, 0) + secs
             if iv.assignee:
@@ -75,13 +82,13 @@ def compute_metrics(
 
     # первый вход в активную работу
     for iv in intervals:
-        if BOARD_BY_NAME[iv.status].is_active_work:
+        if board[iv.status].is_active_work:
             m.work_started_at = iv.started_at
             break
 
     # завершение = начало последнего терминального интервала
     last = intervals[-1]
-    if BOARD_BY_NAME[last.status].is_terminal:
+    if board[last.status].is_terminal:
         m.is_completed = True
         m.completed_at = last.started_at
 
@@ -102,7 +109,7 @@ def compute_metrics(
     m.blocked_episode_count = _count_blocked_episodes(intervals)
     m.status_change_count = sum(1 for e in events if e.kind == EventKind.STATUS_CHANGE)
     m.assignee_change_count = _count_assignee_changes(events)
-    m.reopen_count = _count_reopens(events)
+    m.reopen_count = _count_reopens(events, board)
     m.first_response_business_s = _first_response(created_at, comments, calendar, reporter)
     return m
 
@@ -127,14 +134,16 @@ def _count_assignee_changes(events: list[Event]) -> int:
     return changes
 
 
-def _count_reopens(events: list[Event]) -> int:
+def _count_reopens(
+    events: list[Event], board: dict[str, StatusDef] | None = None
+) -> int:
     """Выходы из терминального статуса обратно в работу."""
     reopens = 0
     for ev in events:
         if ev.kind != EventKind.STATUS_CHANGE or not ev.old_value or not ev.new_value:
             continue
-        was_terminal = BOARD_BY_NAME[ev.old_value].is_terminal
-        now_terminal = BOARD_BY_NAME[ev.new_value].is_terminal
+        was_terminal = (board or BOARD_BY_NAME)[ev.old_value].is_terminal
+        now_terminal = (board or BOARD_BY_NAME)[ev.new_value].is_terminal
         if was_terminal and not now_terminal:
             reopens += 1
     return reopens

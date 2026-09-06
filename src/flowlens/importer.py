@@ -74,7 +74,7 @@ def import_tickets(
     stats = ImportStats()
     source_id = _ensure_source(engine, profile)
     team_id, calendar_id = _ensure_team(engine, team_name)
-    status_cache = _load_statuses(engine, source_id)
+    status_cache = _load_statuses(engine, source_id, team_id)
     resolver = PersonResolver()
     person_ids: dict[str, int] = {}
 
@@ -158,11 +158,15 @@ def _import_batch(
                 _upsert_alias(conn, db_id, source_id, external, person.email)
                 person_ids[external] = db_id
 
-            _ensure_status(conn, source_id, ticket.status, profile, status_cache, stats)
+            _ensure_status(
+                conn, source_id, team_id, ticket.status, profile, status_cache, stats
+            )
             for event in ticket.events:
                 for value in (event.old_value, event.new_value):
                     if event.kind == "status_change" and value:
-                        _ensure_status(conn, source_id, value, profile, status_cache, stats)
+                        _ensure_status(
+                            conn, source_id, team_id, value, profile, status_cache, stats
+                        )
 
             ticket_id = _upsert_ticket(conn, ticket, source_id, team_id, status_cache, person_ids)
             stats.tickets += 1
@@ -256,18 +260,31 @@ def assign_service_classes(engine: Engine, source_id: int) -> int:
     return result.rowcount
 
 
-def _load_statuses(engine: Engine, source_id: int) -> dict[str, int]:
+def _load_statuses(engine: Engine, source_id: int, team_id: int) -> dict[str, int]:
+    """Статусы команды, с откатом на настройку источника по умолчанию.
+
+    Своя строка команды перекрывает общую: так первая настроившаяся команда
+    не навязывает свою классификацию остальным.
+    """
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT external_name, id FROM workflow_status WHERE source_id = :src"),
-            {"src": source_id},
+            text(
+                "SELECT external_name, id, team_id FROM workflow_status "
+                "WHERE source_id = :src AND (team_id = :team OR team_id IS NULL) "
+                "ORDER BY (team_id IS NULL)"
+            ),
+            {"src": source_id, "team": team_id},
         ).all()
-    return {name: sid for name, sid in rows}
+    cache: dict[str, int] = {}
+    for name, status_id, _ in rows:
+        cache.setdefault(name, status_id)
+    return cache
 
 
 def _ensure_status(
     conn,
     source_id: int,
+    team_id: int,
     name: str,
     profile: SourceProfile,
     cache: dict[str, int],
@@ -294,15 +311,19 @@ def _ensure_status(
 
     status_id = conn.execute(
         text(
-            "INSERT INTO workflow_status (source_id, external_name, phase, is_active_work, "
-            "  is_queue, is_terminal, board_order) "
-            "VALUES (:src, :name, CAST(:phase AS canonical_phase), :active, :queue, "
+            "INSERT INTO workflow_status (source_id, team_id, external_name, phase, "
+            "  is_active_work, is_queue, is_terminal, board_order) "
+            "VALUES (:src, :team, :name, CAST(:phase AS canonical_phase), :active, :queue, "
             "        :terminal, :ord) "
-            "ON CONFLICT (source_id, external_name) DO UPDATE "
-            "SET phase = EXCLUDED.phase RETURNING id"
+            # существующую строку не трогаем: команда могла перенастроить фазу
+            # руками, и синхронизация не должна возвращать значение по умолчанию
+            "ON CONFLICT (source_id, team_id, external_name) WHERE team_id IS NOT NULL "
+            "DO UPDATE "
+            "SET external_name = workflow_status.external_name RETURNING id"
         ),
         {
             "src": source_id,
+            "team": team_id,
             "name": name,
             "phase": phase.value,
             "active": active,

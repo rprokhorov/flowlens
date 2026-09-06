@@ -428,6 +428,96 @@ def post_jira_sync(engine: EngineDep, request: JiraSyncRequest) -> dict[str, Any
     }
 
 
+@app.get("/api/teams")
+def get_teams(engine: EngineDep) -> list[dict[str, Any]]:
+    """Команды с числом задач — для переключателя в дашборде."""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT t.id, t.name, c.name AS calendar, c.tz, "
+                "       count(ti.id) AS tickets "
+                "FROM team t "
+                "JOIN calendar c ON c.id = t.calendar_id "
+                "LEFT JOIN ticket ti ON ti.team_id = t.id "
+                "GROUP BY t.id, t.name, c.name, c.tz ORDER BY t.name"
+            )
+        ).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "calendar": r.calendar,
+            "tz": r.tz,
+            "tickets": r.tickets,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/teams/{team_id}/statuses")
+def get_team_statuses(engine: EngineDep, team_id: int) -> list[dict[str, Any]]:
+    """Как команда классифицирует статусы своей доски.
+
+    От этого зависят flow efficiency, время по фазам и WIP: статус, помеченный
+    активной работой, попадает в touch time, а помеченный очередью — в ожидание.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, external_name, CAST(phase AS text) AS phase, "
+                "       is_active_work, is_queue, is_terminal, board_order "
+                "FROM workflow_status WHERE team_id = :team "
+                "ORDER BY board_order NULLS LAST, external_name"
+            ),
+            {"team": team_id},
+        ).all()
+    return [dict(r._mapping) for r in rows]
+
+
+class StatusUpdate(BaseModel):
+    """Изменение классификации одного статуса."""
+
+    phase: str | None = None
+    is_active_work: bool | None = None
+    is_queue: bool | None = None
+    board_order: int | None = None
+
+
+@app.patch("/api/statuses/{status_id}")
+def patch_status(engine: EngineDep, status_id: int, update: StatusUpdate) -> dict[str, Any]:
+    """Изменить классификацию статуса и пересчитать метрики.
+
+    Пересчёт обязателен: интервалы и все производные метрики зависят от того,
+    считается ли статус работой. Без него дашборд показывал бы старые цифры
+    под новой настройкой — худший вид расхождения, потому что незаметный.
+    """
+    from flowlens.pipeline import recompute_all
+
+    changes = {k: v for k, v in update.model_dump().items() if v is not None}
+    if not changes:
+        raise HTTPException(status_code=422, detail="Нечего менять")
+
+    assignments = ", ".join(
+        f"{key} = CAST(:{key} AS canonical_phase)" if key == "phase" else f"{key} = :{key}"
+        for key in changes
+    )
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                f"UPDATE workflow_status SET {assignments} WHERE id = :id "
+                "RETURNING id, external_name, CAST(phase AS text) AS phase, "
+                "          is_active_work, is_queue, board_order"
+            ),
+            {**changes, "id": status_id},
+        ).one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Статус не найден")
+
+    recompute_all(engine)
+    return dict(row._mapping)
+
+
 @app.get("/api/people")
 def get_people(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     """Распределение нагрузки между людьми."""

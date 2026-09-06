@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from flowlens.core.calendar import WorkCalendar, business_seconds_by_day
-from flowlens.core.domain import BOARD_BY_NAME
+from flowlens.core.domain import BOARD_BY_NAME, StatusDef
 from flowlens.core.intervals import Interval
 
 
@@ -39,17 +39,19 @@ def accumulate_workload(
     intervals: list[Interval],
     calendar: WorkCalendar,
     into: dict[tuple[str, date], DailyLoad] | None = None,
+    board: dict[str, StatusDef] | None = None,
 ) -> dict[tuple[str, date], DailyLoad]:
     """Разложить владение тикетом по людям и дням.
 
     Результат накапливается в `into`, чтобы собирать по многим тикетам.
     """
+    board = board or BOARD_BY_NAME
     acc = into if into is not None else {}
 
     for iv in intervals:
         if iv.assignee is None or iv.ended_at is None:
             continue
-        spec = BOARD_BY_NAME[iv.status]
+        spec = board[iv.status]
         per_day = business_seconds_by_day(calendar, iv.started_at, iv.ended_at)
         for day, seconds in per_day.items():
             key = (iv.assignee, day)
@@ -66,7 +68,7 @@ def accumulate_workload(
 
     # завершение тикета засчитывается последнему владельцу
     last = intervals[-1]
-    if BOARD_BY_NAME[last.status].is_terminal:
+    if board[last.status].is_terminal:
         owner = _last_owner(intervals)
         if owner is not None:
             day = last.started_at.astimezone(calendar.zone).date()

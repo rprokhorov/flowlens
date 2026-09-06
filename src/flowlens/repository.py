@@ -12,7 +12,7 @@ from datetime import date, datetime
 from sqlalchemy import Engine, text
 
 from flowlens.core.calendar import DEFAULT_WORKWEEK, WorkCalendar
-from flowlens.core.domain import BOARD, TicketSeed
+from flowlens.core.domain import BOARD, BOARD_BY_NAME, Phase, StatusDef, TicketSeed
 from flowlens.core.intervals import Interval
 from flowlens.core.metrics import TicketMetrics
 from flowlens.core.workload import DailyLoad
@@ -89,16 +89,18 @@ def ensure_reference_data(
             status_ids[spec.name] = conn.execute(
                 text(
                     "INSERT INTO workflow_status "
-                    "(source_id, external_name, phase, is_active_work, is_queue, "
-                    " is_terminal, board_order) "
-                    "VALUES (:src, :name, CAST(:phase AS canonical_phase), :active, "
+                    "(source_id, team_id, external_name, phase, is_active_work, "
+                    " is_queue, is_terminal, board_order) "
+                    "VALUES (:src, :team, :name, CAST(:phase AS canonical_phase), :active, "
                     "        :queue, :terminal, :ord) "
-                    "ON CONFLICT (source_id, external_name) DO UPDATE "
+                    "ON CONFLICT (source_id, team_id, external_name) "
+                    "WHERE team_id IS NOT NULL DO UPDATE "
                     "SET phase = EXCLUDED.phase, is_active_work = EXCLUDED.is_active_work "
                     "RETURNING id"
                 ),
                 {
                     "src": source_id,
+                    "team": team_id,
                     "name": spec.name,
                     "phase": spec.phase.value,
                     "active": spec.is_active_work,
@@ -483,6 +485,43 @@ def load_quality_rows(engine: Engine) -> list[dict]:
             )
         ).all()
     return [dict(r._mapping) for r in rows]
+
+
+def load_board(engine: Engine, team_id: int) -> dict[str, StatusDef]:
+    """Классификация статусов команды — из БД, а не из константы.
+
+    От неё зависят touch time, время по фазам и WIP, поэтому она настраивается
+    на команду: `qa` у одной команды code review и работа, у другой — очередь
+    на ручное тестирование. Своя строка команды перекрывает общую настройку
+    источника; чего нет в БД, берётся из эталонной доски.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT external_name, CAST(phase AS text) AS phase, is_active_work, "
+                "       is_queue, is_terminal, board_order, team_id "
+                "FROM workflow_status "
+                "WHERE team_id = :team OR team_id IS NULL "
+                "ORDER BY (team_id IS NULL)"
+            ),
+            {"team": team_id},
+        ).all()
+
+    board: dict[str, StatusDef] = dict(BOARD_BY_NAME)
+    seen: set[str] = set()
+    for row in rows:
+        if row.external_name in seen:
+            continue
+        seen.add(row.external_name)
+        board[row.external_name] = StatusDef(
+            name=row.external_name,
+            phase=Phase(row.phase),
+            is_active_work=row.is_active_work,
+            is_queue=row.is_queue,
+            is_terminal=row.is_terminal,
+            board_order=row.board_order or 0,
+        )
+    return board
 
 
 def load_calendar(engine: Engine, team_id: int) -> WorkCalendar:

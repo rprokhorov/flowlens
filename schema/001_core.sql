@@ -90,18 +90,26 @@ CREATE TYPE canonical_phase AS ENUM (
     'cancelled'
 );
 
+-- Классификация статусов задаётся на команду: `qa` у одной команды —
+-- code review и активная работа, у другой — очередь на ручное тестирование.
+-- team_id IS NULL означает настройку по умолчанию для источника.
 CREATE TABLE workflow_status (
     id             bigserial PRIMARY KEY,
     source_id      bigint      NOT NULL REFERENCES source(id),
+    team_id        bigint      REFERENCES team(id) ON DELETE CASCADE,
     external_name  text        NOT NULL,
     external_id    text,
     phase          canonical_phase NOT NULL,
     is_active_work boolean     NOT NULL,   -- идёт работа → входит в touch time
     is_queue       boolean     NOT NULL,   -- ожидание → входит в queue time
     is_terminal    boolean     NOT NULL DEFAULT false,
-    board_order    int,                    -- порядок колонок для CFD
-    UNIQUE (source_id, external_name)
+    board_order    int                     -- порядок колонок для CFD
 );
+
+CREATE UNIQUE INDEX workflow_status_team_idx
+    ON workflow_status (source_id, team_id, external_name) WHERE team_id IS NOT NULL;
+CREATE UNIQUE INDEX workflow_status_default_idx
+    ON workflow_status (source_id, external_name) WHERE team_id IS NULL;
 
 -- класс обслуживания = issue_type × priority (пункт H)
 CREATE TABLE service_class (
