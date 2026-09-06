@@ -1009,9 +1009,13 @@ def get_people(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
 
 
 @app.get("/api/quality")
-def get_quality(engine: EngineDep) -> dict[str, Any]:
-    """Достоверность данных."""
-    rows = load_quality_rows(engine)
+def get_quality(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
+    """Достоверность данных.
+
+    Фильтруется по команде наравне с остальными разделами: качество чужих
+    данных — такая же чужая информация, как и сами метрики.
+    """
+    rows = load_quality_rows(engine, filters.team_id)
     report = build_report(rows)
     return {
         "total_tickets": report.total_tickets,
@@ -1036,7 +1040,7 @@ def get_quality(engine: EngineDep) -> dict[str, Any]:
 @app.get("/api/advice")
 def get_advice(engine: EngineDep, filters: FiltersDep) -> dict[str, Any]:
     """Наблюдения о процессе по детерминированным правилам."""
-    quality_rows = load_quality_rows(engine)
+    quality_rows = load_quality_rows(engine, filters.team_id)
     report = build_report(quality_rows)
 
     from flowlens.core.forecast import wip_health

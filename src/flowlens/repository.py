@@ -478,8 +478,13 @@ def load_declared_dates(engine: Engine, ticket_id: int) -> dict[str, tuple[datet
     return {boundary: (value, precision) for boundary, value, precision in rows}
 
 
-def load_quality_rows(engine: Engine) -> list[dict]:
-    """Данные для отчёта о качестве."""
+def load_quality_rows(engine: Engine, team_id: int | None = None) -> list[dict]:
+    """Данные для отчёта о качестве.
+
+    Без team_id отдаёт всё — это нужно администратору. Тимлиду качество
+    чужих данных видеть незачем, и фильтр обязателен.
+    """
+    where = " WHERE t.team_id = :team" if team_id is not None else ""
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -488,7 +493,9 @@ def load_quality_rows(engine: Engine) -> list[dict]:
                 "       EXISTS (SELECT 1 FROM ticket_declared_date d "
                 "               WHERE d.ticket_id = t.id) AS has_declared "
                 "FROM ticket_timeline_fact f JOIN ticket t ON t.id = f.ticket_id"
-            )
+                + where
+            ),
+            {"team": team_id} if team_id is not None else {},
         ).all()
     return [dict(r._mapping) for r in rows]
 
