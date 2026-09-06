@@ -211,7 +211,7 @@ def _ensure_team(engine: Engine, team_name: str) -> tuple[int, int]:
         team_id = conn.execute(
             text(
                 "INSERT INTO team (name, calendar_id) VALUES (:name, :cal) "
-                "ON CONFLICT (name, parent_team_id) DO UPDATE "
+                "ON CONFLICT (name, COALESCE(parent_team_id, 0)) DO UPDATE "
                 "SET calendar_id = EXCLUDED.calendar_id RETURNING id"
             ),
             {"name": team_name, "cal": calendar_id},

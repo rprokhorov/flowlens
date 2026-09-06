@@ -519,3 +519,78 @@ def test_jira_sync_validates_payload(client) -> None:
     """JQL обязателен: без него выгружать нечего."""
     response = client.post("/api/jira/sync", json={"base_url": "https://x.example"})
     assert response.status_code == 422
+
+
+# --- команды и настройка статусов --------------------------------------------
+
+
+def test_teams_endpoint(client) -> None:
+    teams = client.get("/api/teams").json()
+    assert teams
+    assert teams[0]["name"]
+    assert "tickets" in teams[0]
+
+
+def test_team_statuses_listed(client) -> None:
+    teams = [t for t in client.get("/api/teams").json() if t["tickets"]]
+    team_id = teams[0]["id"]
+    statuses = client.get(f"/api/teams/{team_id}/statuses").json()
+    names = {s["external_name"] for s in statuses}
+    assert "in progress" in names
+
+
+def test_patch_status_changes_metrics(client) -> None:
+    """Смена классификации обязана дойти до цифр, а не остаться в таблице.
+
+    Данные пересоздаются: тесты импорта выше подменяют содержимое базы,
+    и без этого выбранный статус может оказаться без накопленного времени.
+    """
+    from flowlens.db import make_engine
+
+    engine = make_engine()
+    seed_demo(engine, ticket_count=200, months=6, seed=5)
+    recompute_all(engine)
+
+    # берём команду с задачами: у пустой менять классификацию нечему,
+    # и тест не проверял бы связь настройки с метриками
+    teams = [t for t in client.get("/api/teams").json() if t["tickets"]]
+    assert teams, "нужна хотя бы одна команда с задачами"
+    team_id = max(teams, key=lambda t: t["tickets"])["id"]
+    statuses = client.get(f"/api/teams/{team_id}/statuses").json()
+    # берём активный статус с наибольшим накопленным временем: перевод пустого
+    # статуса в очередь ничего бы не изменил, и тест не проверял бы связь
+    phases = {
+        p["phase"]: p["total_s"]
+        for p in client.get("/api/flow-efficiency", params={"team_id": team_id})
+        .json()["by_phase"]
+    }
+    candidates = [
+        (phases.get(s["phase"], 0), s) for s in statuses if s["is_active_work"]
+    ]
+    weight, active = max(candidates, key=lambda pair: pair[0])
+    assert weight > 0, "нужен статус с накопленным временем"
+
+    scoped = {"team_id": team_id}
+    before = client.get("/api/flow-efficiency", params=scoped).json()["efficiency"]
+    client.patch(
+        f"/api/statuses/{active['id']}", json={"is_active_work": False, "is_queue": True}
+    )
+    after = client.get("/api/flow-efficiency", params=scoped).json()["efficiency"]
+
+    client.patch(
+        f"/api/statuses/{active['id']}", json={"is_active_work": True, "is_queue": False}
+    )
+    restored = client.get("/api/flow-efficiency", params=scoped).json()["efficiency"]
+
+    assert after < before, "перевод активной фазы в очередь снижает эффективность"
+    assert restored == pytest.approx(before, abs=0.001)
+
+
+def test_patch_status_rejects_empty(client) -> None:
+    teams = [t for t in client.get("/api/teams").json() if t["tickets"]]
+    status_id = client.get(f"/api/teams/{teams[0]['id']}/statuses").json()[0]["id"]
+    assert client.patch(f"/api/statuses/{status_id}", json={}).status_code == 422
+
+
+def test_patch_status_404_for_unknown(client) -> None:
+    assert client.patch("/api/statuses/999999", json={"is_queue": True}).status_code == 404

@@ -31,10 +31,12 @@
     <button class="tab" data-tab="people">Нагрузка</button>
     <button class="tab" data-tab="forecast">Прогноз</button>
     <button class="tab" data-tab="quality">Качество данных</button>
+    <button class="tab" data-tab="settings">Настройки</button>
     <button class="tab" data-tab="tickets">Задачи</button>
   </nav>
 
   <div class="filters">
+    <select id="f-team" title="Команда"></select>
     <span><label for="f-from">с</label><input type="date" id="f-from"></span>
     <span><label for="f-to">по</label><input type="date" id="f-to"></span>
     <select id="f-type"><option value="">Все типы</option></select>
@@ -325,6 +327,29 @@
       <p class="hint">Ядро хранит и историю статусов, и даты, проставленные вручную,
          затем выбирает по политике. Здесь видно, что чем оказалось.</p>
       <div class="chart" id="chart-sources"></div>
+    </div>
+  </section>
+
+  <!-- НАСТРОЙКИ -->
+  <section class="panel" data-panel="settings">
+    <div class="card">
+      <h2>Команды</h2>
+      <p class="hint">Каждая команда считается отдельно: свой календарь,
+         своя классификация статусов, свои обещания. Переключатель команды —
+         в строке фильтров.</p>
+      <div class="scroll" id="teams-table"></div>
+    </div>
+
+    <div class="card">
+      <h2>Классификация статусов</h2>
+      <p class="hint">От этого зависят эффективность потока, время по фазам
+         и WIP. «Работа» — над задачей действительно работают; «очередь» —
+         задача ждёт. Один и тот же статус у разных команд может значить разное:
+         <code>qa</code> — это code review или очередь на тестирование,
+         решает команда.</p>
+      <p class="hint">Изменение пересчитывает метрики — на больших объёмах
+         это занимает несколько секунд.</p>
+      <div id="statuses-editor"></div>
     </div>
   </section>
 

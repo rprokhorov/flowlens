@@ -165,7 +165,8 @@ def test_teams_classify_same_status_differently(data) -> None:
         team_b = conn.execute(
             text(
                 "INSERT INTO team (name, calendar_id) VALUES ('test-team-b', :cal) "
-                "ON CONFLICT (name, parent_team_id) DO UPDATE SET name = EXCLUDED.name "
+                "ON CONFLICT (name, COALESCE(parent_team_id, 0)) DO UPDATE "
+                "SET name = EXCLUDED.name "
                 "RETURNING id"
             ),
             {"cal": calendar_id},

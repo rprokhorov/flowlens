@@ -98,6 +98,7 @@ function filterParams() {
   if (get('f-component')) params.set('component', get('f-component'));
   if (get('f-confidence') !== 'low') params.set('min_confidence', get('f-confidence'));
   if (get('f-completion') !== 'terminal') params.set('completion', get('f-completion'));
+  if (currentTeam != null) params.set('team_id', String(currentTeam));
   params.set('unit', unit);
   return params;
 }
@@ -1343,6 +1344,119 @@ async function loadSle() {
 }
 
 // ============================================================================
+// Вкладка: настройки
+// ============================================================================
+
+const PHASE_OPTIONS = [
+  'backlog', 'triage', 'in_progress', 'blocked', 'review',
+  'verify', 'done_pending', 'done', 'cancelled',
+];
+
+let currentTeam = null;
+
+async function loadTeams() {
+  const teams = await (await fetch('/api/teams')).json();
+  const select = document.getElementById('f-team');
+  select.innerHTML = teams.map(team => `
+    <option value="${team.id}">${escapeHtml(team.name)} (${team.tickets})</option>`).join('');
+  if (currentTeam == null && teams.length) currentTeam = teams[0].id;
+  if (currentTeam != null) select.value = String(currentTeam);
+  // селектор нужен только когда команд больше одной
+  select.hidden = teams.length < 2;
+  return teams;
+}
+
+function renderTeams(teams) {
+  document.getElementById('teams-table').innerHTML = `<table>
+    <thead><tr><th>Команда</th><th>Календарь</th><th>Часовой пояс</th>
+      <th class="num">Задач</th></tr></thead>
+    <tbody>${teams.map(team => `
+      <tr>
+        <td>${escapeHtml(team.name)}</td>
+        <td>${escapeHtml(team.calendar)}</td>
+        <td>${escapeHtml(team.tz)}</td>
+        <td class="num">${team.tickets}</td>
+      </tr>`).join('')}</tbody></table>`;
+}
+
+function renderStatuses(statuses) {
+  const container = document.getElementById('statuses-editor');
+  if (!statuses.length) {
+    container.innerHTML = '<div class="muted">У команды пока нет статусов: '
+      + 'они появятся после первой загрузки данных.</div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="status-head">
+      <span>Статус</span><span>Фаза</span><span>Работа</span><span>Очередь</span>
+    </div>
+    ${statuses.map(status => `
+      <div class="status-row" data-status="${status.id}">
+        <span class="status-name">${escapeHtml(status.external_name)}</span>
+        <select data-field="phase">
+          ${PHASE_OPTIONS.map(phase => `
+            <option value="${phase}" ${phase === status.phase ? 'selected' : ''}>
+              ${escapeHtml(PHASE_LABEL[phase] || phase)}
+            </option>`).join('')}
+        </select>
+        <label>
+          <input type="checkbox" data-field="is_active_work"
+                 ${status.is_active_work ? 'checked' : ''}>
+          работа
+        </label>
+        <label>
+          <input type="checkbox" data-field="is_queue" ${status.is_queue ? 'checked' : ''}>
+          очередь
+        </label>
+      </div>`).join('')}`;
+
+  for (const input of container.querySelectorAll('[data-field]')) {
+    input.addEventListener('change', () => saveStatus(input));
+  }
+}
+
+async function saveStatus(input) {
+  const row = input.closest('.status-row');
+  const statusId = row.dataset.status;
+  const field = input.dataset.field;
+  const value = input.type === 'checkbox' ? input.checked : input.value;
+
+  input.disabled = true;
+  try {
+    const response = await fetch(`/api/statuses/${statusId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [field]: value }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      window.alert(`Не удалось сохранить: ${data.detail || response.statusText}`);
+      // возвращаем прежнее состояние: расхождение UI с базой опаснее отказа
+      if (input.type === 'checkbox') input.checked = !value;
+      return;
+    }
+    // метрики уже пересчитаны на сервере — сбрасываем кэш вкладок
+    for (const key of Object.keys(loaded)) {
+      if (key !== 'settings') delete loaded[key];
+    }
+  } finally {
+    input.disabled = false;
+  }
+}
+
+async function loadSettings() {
+  const teams = await loadTeams();
+  renderTeams(teams);
+  if (currentTeam == null) {
+    renderStatuses([]);
+    return;
+  }
+  const statuses = await (await fetch(`/api/teams/${currentTeam}/statuses`)).json();
+  renderStatuses(statuses);
+}
+
+// ============================================================================
 // Вкладка: нагрузка
 // ============================================================================
 
@@ -2316,6 +2430,7 @@ const TAB_LOADERS = {
   people: loadPeople,
   forecast: loadForecast,
   quality: loadQuality,
+  settings: loadSettings,
   tickets: loadTickets,
 };
 
@@ -2403,6 +2518,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 
   // фильтры
+  document.getElementById('f-team').addEventListener('change', event => {
+    currentTeam = Number(event.target.value);
+    invalidateAll();
+  });
   for (const id of ['f-from', 'f-to', 'f-type', 'f-priority', 'f-component', 'f-confidence',
                     'f-completion']) {
     document.getElementById(id).addEventListener('change', invalidateAll);
@@ -2484,6 +2603,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     for (const chart of Object.values(charts)) chart.resize();
   });
 
+  await loadTeams();
   await loadFilterOptions();
   await showTab(location.hash.slice(1) || 'overview');
 

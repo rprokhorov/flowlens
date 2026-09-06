@@ -77,7 +77,9 @@ def ensure_reference_data(
             text(
                 "INSERT INTO team (name, parent_team_id, calendar_id, policy) "
                 "VALUES (:name, NULL, :cal, '{}') "
-                "ON CONFLICT (name, parent_team_id) DO UPDATE "
+                # COALESCE, потому что NULL != NULL: без него команда верхнего
+                # уровня создавалась заново при каждом импорте
+                "ON CONFLICT (name, COALESCE(parent_team_id, 0)) DO UPDATE "
                 "SET calendar_id = EXCLUDED.calendar_id "
                 "RETURNING id"
             ),

@@ -33,9 +33,12 @@ CREATE TABLE team (
     name           text        NOT NULL,
     parent_team_id bigint      REFERENCES team(id),
     calendar_id    bigint      NOT NULL REFERENCES calendar(id),
-    policy         jsonb       NOT NULL DEFAULT '{}'::jsonb,  -- reconciliation_policy override
-    UNIQUE (name, parent_team_id)
+    policy         jsonb       NOT NULL DEFAULT '{}'::jsonb   -- reconciliation_policy override
 );
+
+-- COALESCE, потому что NULL != NULL: без него команда верхнего уровня
+-- (parent_team_id IS NULL) создавалась заново при каждом импорте
+CREATE UNIQUE INDEX team_natural_key_idx ON team (name, COALESCE(parent_team_id, 0));
 
 CREATE TABLE person (
     id            bigserial PRIMARY KEY,
