@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -265,3 +266,90 @@ def test_second_source_reuses_team_statuses(data) -> None:
         conn.execute(text("DELETE FROM source WHERE name = 'second-source'"))
 
     assert after == before, "второй источник не должен плодить статусы команды"
+
+
+def test_recompute_uses_each_team_board(data) -> None:
+    """Пересчёт обязан брать доску КАЖДОЙ команды, а не первого тикета.
+
+    Дефект, который тест закрывает: recompute_all брал team_id из первой
+    строки выборки и применял её классификацию ко всем. С одной командой
+    это работало, с двумя — часть метрик считалась по чужой доске,
+    без единого сообщения об ошибке.
+
+    Сравниваем одну и ту же команду до и после смены её классификации:
+    состав задач при этом не меняется, и разница может быть только от доски.
+    """
+    from flowlens.analytics import flow_efficiency
+
+    with data.begin() as conn:
+        calendar_id = conn.execute(
+            text("SELECT calendar_id FROM team WHERE id = 1")
+        ).scalar_one()
+        second = conn.execute(
+            text(
+                "INSERT INTO team (name, calendar_id) VALUES ('board-split', :cal) "
+                "ON CONFLICT (name, COALESCE(parent_team_id, 0)) DO UPDATE "
+                "SET name = EXCLUDED.name RETURNING id"
+            ),
+            {"cal": calendar_id},
+        ).scalar_one()
+        source_id = conn.execute(
+            text("SELECT min(source_id) FROM workflow_status")
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO workflow_status "
+                "(source_id, team_id, external_name, phase, is_active_work, "
+                " is_queue, is_terminal, board_order) "
+                "SELECT :src, :team, external_name, phase, is_active_work, "
+                "       is_queue, is_terminal, board_order "
+                "FROM workflow_status WHERE team_id = 1 "
+                "ON CONFLICT (team_id, external_name) WHERE team_id IS NOT NULL DO NOTHING"
+            ),
+            {"src": source_id, "team": second},
+        )
+        # Первые задачи уходят второй команде: тогда сломанный recompute
+        # возьмёт её доску (она в первой строке выборки) и применит ко ВСЕМ,
+        # включая первую команду. Проверять надо именно первую — ту, чья
+        # доска при дефекте подменяется чужой.
+        conn.execute(
+            text(
+                "UPDATE ticket SET team_id = :team WHERE id IN "
+                "(SELECT id FROM ticket ORDER BY id LIMIT 40)"
+            ),
+            {"team": second},
+        )
+
+    first_scope = replace(Filters(), team_id=1)
+    try:
+        recompute_all(data)
+        before = flow_efficiency(data, first_scope)["efficiency"]
+        assert before is not None, "метрики первой команды не посчитаны"
+
+        # Меняем классификацию ТОЛЬКО у второй команды. На метрики первой
+        # это влиять не должно: у неё своя доска.
+        with data.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE workflow_status SET is_active_work = false, is_queue = true "
+                    "WHERE team_id = :team AND external_name = 'qa'"
+                ),
+                {"team": second},
+            )
+        recompute_all(data)
+        after = flow_efficiency(data, first_scope)["efficiency"]
+
+        assert after == pytest.approx(before, abs=0.0001), (
+            "классификация чужой команды повлияла на метрики первой — "
+            "значит доска берётся не по команде тикета"
+        )
+    finally:
+        with data.begin() as conn:
+            conn.execute(
+                text("UPDATE ticket SET team_id = 1 WHERE team_id = :t"), {"t": second}
+            )
+        # пересчёт до удаления статусов: интервалы ещё ссылаются на них
+        recompute_all(data)
+        with data.begin() as conn:
+            conn.execute(text("DELETE FROM workflow_status WHERE team_id = :t"), {"t": second})
+            conn.execute(text("DELETE FROM team WHERE id = :t"), {"t": second})

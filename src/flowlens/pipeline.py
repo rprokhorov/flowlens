@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, text
@@ -155,22 +156,38 @@ def recompute_all(
             )
         ).all()
         status_rows = conn.execute(
-            text("SELECT id, external_name FROM workflow_status")
+            text("SELECT id, external_name, team_id FROM workflow_status")
         ).all()
         person_rows = conn.execute(text("SELECT id, display_name FROM person")).all()
 
-    refs: dict[str, int] = {f"status:{name}": sid for sid, name in status_rows}
-    refs.update({f"person:{name.lower()}": pid for pid, name in person_rows})
+    people_refs = {f"person:{name.lower()}": pid for pid, name in person_rows}
+    # Статусы разложены по командам: у разных команд бывают одноимённые статусы,
+    # и общий словарь заставил бы интервалы одной команды ссылаться на статус
+    # другой — метрики считались бы по чужой классификации.
+    statuses_by_team: dict[int | None, dict[str, int]] = {}
+    for sid, name, team in status_rows:
+        statuses_by_team.setdefault(team, {})[f"status:{name}"] = sid
 
     if not rows:
         return {"tickets": 0, "intervals": 0}
 
-    team_id = rows[0].team_id
-    cal = load_calendar(engine, team_id)
-    refs["calendar_id"] = _calendar_id(engine, team_id)
-    refs["team_id"] = team_id
-    # классификация статусов команды: от неё зависит, что считается работой
-    board = load_board(engine, team_id)
+    # Календарь, доска и справочник статусов — свои у каждой команды. Считать
+    # всё по команде первого тикета можно было, пока команда была одна.
+    team_cache: dict[int, dict[str, Any]] = {}
+
+    def team_context(team_id: int) -> dict[str, Any]:
+        if team_id not in team_cache:
+            refs = dict(people_refs)
+            refs.update(statuses_by_team.get(None, {}))
+            refs.update(statuses_by_team.get(team_id, {}))
+            refs["calendar_id"] = _calendar_id(engine, team_id)
+            refs["team_id"] = team_id
+            team_cache[team_id] = {
+                "calendar": load_calendar(engine, team_id),
+                "board": load_board(engine, team_id),
+                "refs": refs,
+            }
+        return team_cache[team_id]
 
     total_intervals = 0
     anomalous = 0
@@ -180,6 +197,8 @@ def recompute_all(
         events, comments = _load_ticket_history(engine, row.id)
         if not events:
             continue
+        context = team_context(row.team_id)
+        cal, board, refs = context["calendar"], context["board"], context["refs"]
         intervals = build_intervals(events, cal, now=moment, board=board)
         save_intervals(engine, row.id, intervals, refs)
         total_intervals += len(intervals)
