@@ -53,6 +53,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://flowlens:flowlens@db:5432/flowlens
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Ключ шифрования токенов источников. Значение по умолчанию годится
+      # только для локальной пробы: на сервере задайте свой и не теряйте его —
+      # при смене ключа сохранённые токены придётся вводить заново.
+      FLOWLENS_SECRET_KEY: ${FLOWLENS_SECRET_KEY:-local-development-key}
+      # Фоновое обновление по расписанию; выключено по умолчанию
+      FLOWLENS_SCHEDULER: ${FLOWLENS_SCHEDULER:-0}
     ports:
       - "8000:8000"
     depends_on:

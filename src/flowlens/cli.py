@@ -618,6 +618,60 @@ def explain(
     typer.echo(text)
 
 
+@app.command("sources")
+def sources_command(
+    sync: Annotated[
+        bool, typer.Option("--sync", help="Синхронизировать те, которым пора")
+    ] = False,
+) -> None:
+    """Подключения команд к источникам: список или запуск обновления."""
+    from flowlens import secrets
+    from flowlens import sources as sources_module
+
+    engine = make_engine()
+
+    if sync:
+        from flowlens.scheduler import run_due
+
+        results = run_due(engine)
+        if not results:
+            typer.echo("Нет подключений, которым пора обновиться.")
+            return
+        for item in results:
+            if item["status"] == "ok":
+                typer.echo(f"  #{item['source_id']}: загружено {item['tickets']} задач")
+            else:
+                typer.echo(f"  #{item['source_id']}: ошибка — {item['error']}")
+        return
+
+    items = sources_module.list_sources(engine)
+    if not items:
+        typer.echo(
+            "Подключений нет. Настроить: кнопка «Импорт данных» в дашборде "
+            "→ «Подключить Jira»."
+        )
+        if not secrets.available():
+            typer.echo(
+                f"Внимание: не задан {secrets.ENV_KEY} — сохранять токены будет некуда."
+            )
+        return
+
+    for item in items:
+        schedule = (
+            f"каждые {item.sync_interval_minutes} мин"
+            if item.sync_interval_minutes
+            else "вручную"
+        )
+        status = item.last_sync_status or "ещё не запускалась"
+        typer.echo(f"#{item.id}  {item.base_url}  команда {item.team_id}  [{schedule}]")
+        typer.echo(f"     JQL: {item.jql}")
+        typer.echo(f"     последняя синхронизация: {status}")
+        if item.last_sync_error:
+            typer.echo(f"     ошибка: {item.last_sync_error}")
+        if not item.has_secret:
+            typer.echo("     токен не задан — синхронизация невозможна")
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Адрес")] = "127.0.0.1",

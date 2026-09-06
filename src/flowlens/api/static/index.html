@@ -503,6 +503,20 @@ PROJ-11,Bug,done,2026-01-16,2026-01-17,2026-01-19</pre>
              а расхождения покажет на вкладке «Качество данных».</p>
           <div id="jira-fields"></div>
 
+          <label class="field">
+            <span>Обновлять автоматически</span>
+            <select id="jira-interval">
+              <option value="">только вручную</option>
+              <option value="60" selected>раз в час</option>
+              <option value="180">раз в 3 часа</option>
+              <option value="720">дважды в сутки</option>
+              <option value="1440">раз в сутки</option>
+            </select>
+          </label>
+          <label class="import-replace">
+            <input type="checkbox" id="jira-save" checked>
+            Сохранить подключение (токен хранится зашифрованным)
+          </label>
           <label class="import-replace">
             <input type="checkbox" id="jira-replace">
             Заменить текущие данные

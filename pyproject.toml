@@ -13,6 +13,7 @@ dependencies = [
     "python-dateutil",
     "fastapi",
     "python-multipart",  # загрузка файлов через форму импорта
+    "cryptography",  # шифрование токенов источников в базе
     "uvicorn[standard]",
     "httpx",
     "pyyaml",

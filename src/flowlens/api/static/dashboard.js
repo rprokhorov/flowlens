@@ -1200,6 +1200,28 @@ async function syncJira() {
   result.textContent = 'Забираю задачи и историю изменений. На больших проектах это небыстро.';
 
   try {
+    // подключение сохраняется до выгрузки: если выгрузка упадёт по таймауту,
+    // настройки не придётся вводить заново
+    if (document.getElementById('jira-save').checked) {
+      const interval = document.getElementById('jira-interval').value;
+      const saved = await fetch('/api/sources', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: currentTeam,
+          ...jiraCredentials(),
+          jql: document.getElementById('jira-jql').value.trim(),
+          field_mapping: mapping,
+          sync_interval_minutes: interval ? Number(interval) : null,
+        }),
+      });
+      if (!saved.ok) {
+        const problem = await saved.json().catch(() => ({}));
+        result.innerHTML = `Подключение не сохранено: ${escapeHtml(problem.detail || '')}`
+          + '<br>Выгрузка всё равно выполнится.';
+      }
+    }
+
     const response = await fetch('/api/jira/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

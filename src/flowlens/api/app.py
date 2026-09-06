@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -19,10 +23,33 @@ from flowlens.core.quality import build_report
 from flowlens.db import make_engine
 from flowlens.repository import load_quality_rows
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Фоновое обновление данных, если оно включено.
+
+    По умолчанию выключено: локальный запуск не должен молча ходить в Jira.
+    Включается FLOWLENS_SCHEDULER=1 — для сервиса, а не для чужого ноутбука.
+    """
+    task: asyncio.Task[None] | None = None
+    if os.environ.get("FLOWLENS_SCHEDULER") == "1":
+        from flowlens.scheduler import run_forever
+
+        task = asyncio.create_task(run_forever(get_engine()))
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
 app = FastAPI(
     title="FlowLens",
     description="Анализ потока задач",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -516,6 +543,106 @@ def patch_status(engine: EngineDep, status_id: int, update: StatusUpdate) -> dic
 
     recompute_all(engine)
     return dict(row._mapping)
+
+
+class TeamSourceRequest(BaseModel):
+    """Подключение команды к источнику."""
+
+    team_id: int
+    base_url: str
+    jql: str
+    # пустой токен при обновлении означает «оставить прежний»: форма его
+    # не показывает, и присылать заново при каждой правке не нужно
+    token: str | None = None
+    username: str | None = None
+    field_mapping: dict[str, str] = {}
+    verify_ssl: bool = True
+    sync_interval_minutes: int | None = None
+
+
+@app.get("/api/sources")
+def get_sources(
+    engine: EngineDep, team_id: Annotated[int | None, Query()] = None
+) -> dict[str, Any]:
+    """Настроенные подключения. Токены не отдаются никогда."""
+    from flowlens import secrets, sources
+
+    items = sources.list_sources(engine, team_id)
+    return {
+        "sources": [
+            {**item.as_dict(), "next_run_at": (
+                sources.next_run_at(item).isoformat()
+                if sources.next_run_at(item) else None
+            )}
+            for item in items
+        ],
+        # без ключа шифрования сохранять подключения нельзя, и интерфейс
+        # должен сказать об этом прямо, а не отказывать без объяснения
+        "secrets_available": secrets.available(),
+    }
+
+
+@app.post("/api/sources")
+def post_source(engine: EngineDep, request: TeamSourceRequest) -> dict[str, Any]:
+    """Сохранить подключение команды."""
+    from flowlens import secrets, sources
+
+    if request.token and not secrets.available():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Не задан {secrets.ENV_KEY}: сохранять токены некуда. "
+                "Задайте ключ шифрования в окружении сервиса."
+            ),
+        )
+    try:
+        saved = sources.save_source(
+            engine,
+            team_id=request.team_id,
+            base_url=request.base_url,
+            jql=request.jql,
+            secret=request.token,
+            username=request.username,
+            field_mapping=request.field_mapping,
+            verify_ssl=request.verify_ssl,
+            sync_interval_minutes=request.sync_interval_minutes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return saved.as_dict()
+
+
+@app.delete("/api/sources/{source_id}")
+def delete_source_endpoint(engine: EngineDep, source_id: int) -> dict[str, Any]:
+    """Удалить подключение. Загруженные данные остаются."""
+    from flowlens import sources
+
+    if not sources.delete_source(engine, source_id):
+        raise HTTPException(status_code=404, detail="Подключение не найдено")
+    return {"deleted": source_id}
+
+
+@app.post("/api/sources/{source_id}/sync")
+def post_source_sync(
+    engine: EngineDep,
+    source_id: int,
+    full: Annotated[bool, Query(description="Выгрузить заново, игнорируя watermark")] = False,
+) -> dict[str, Any]:
+    """Запустить синхронизацию подключения."""
+    from flowlens import sources
+
+    source = sources.get_source(engine, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Подключение не найдено")
+    if not source.has_secret:
+        raise HTTPException(status_code=422, detail="У подключения не задан токен")
+
+    try:
+        return sources.sync_source(engine, source, full=full)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
 
 
 @app.get("/api/people")
