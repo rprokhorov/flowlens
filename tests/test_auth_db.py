@@ -442,3 +442,75 @@ def test_change_password_works(client, users, engine) -> None:
     assert response.status_code == 200
     assert auth.authenticate(engine, "test-owner", "совершенно-новый-1") is not None
     assert auth.authenticate(engine, "test-owner", "owner-pass") is None
+
+
+# --- админская панель --------------------------------------------------------
+
+
+def test_admin_panel_closed_for_regular_user(client, users) -> None:
+    """Метрики использования и управление доступом — только администратору."""
+    for path in ("/api/admin/usage", "/api/admin/users"):
+        response = client.get(path, headers=basic("test-owner", "owner-pass"))
+        assert response.status_code == 403, path
+
+
+def test_admin_panel_open_for_admin(client, users) -> None:
+    assert client.get(
+        "/api/admin/usage", headers=basic("test-admin", "admin-pass")
+    ).status_code == 200
+
+
+def test_grant_access_via_api(client, users, engine) -> None:
+    response = client.post(
+        "/api/admin/access",
+        json={"username": "test-stranger", "team_id": users["team_id"], "role": "viewer"},
+        headers=basic("test-admin", "admin-pass"),
+    )
+    assert response.status_code == 200
+    assert auth.get_user(engine, "test-stranger").can_view(users["team_id"])
+
+
+def test_revoke_access_via_api(client, users, engine) -> None:
+    params = {"username": "test-viewer", "team_id": users["team_id"]}
+    response = client.delete(
+        "/api/admin/access", params=params, headers=basic("test-admin", "admin-pass")
+    )
+    assert response.status_code == 200
+    assert not auth.get_user(engine, "test-viewer").can_view(users["team_id"])
+
+
+def test_regular_user_cannot_grant_access(client, users) -> None:
+    """Иначе владелец команды выдал бы себе доступ куда угодно."""
+    response = client.post(
+        "/api/admin/access",
+        json={"username": "test-stranger", "team_id": users["team_id"], "role": "owner"},
+        headers=basic("test-owner", "owner-pass"),
+    )
+    assert response.status_code == 403
+
+
+def test_admin_cannot_delete_self(client, users) -> None:
+    """Администратор без доступа не сможет вернуть его через интерфейс."""
+    response = client.delete(
+        "/api/admin/users/test-admin", headers=basic("test-admin", "admin-pass")
+    )
+    assert response.status_code == 400
+
+
+def test_create_user_via_api(client, users, engine) -> None:
+    response = client.post(
+        "/api/admin/users",
+        json={"username": "test-created", "password": "пароль-123", "display_name": "Новый"},
+        headers=basic("test-admin", "admin-pass"),
+    )
+    assert response.status_code == 200
+    assert auth.authenticate(engine, "test-created", "пароль-123") is not None
+
+
+def test_create_user_rejects_short_password(client, users) -> None:
+    response = client.post(
+        "/api/admin/users",
+        json={"username": "test-weak", "password": "123"},
+        headers=basic("test-admin", "admin-pass"),
+    )
+    assert response.status_code == 422

@@ -1366,6 +1366,248 @@ async function loadSle() {
 }
 
 // ============================================================================
+// Вкладка: админка
+// ============================================================================
+
+const ROLE_LABEL = { owner: 'владелец', viewer: 'просмотр' };
+
+function renderAdminTiles(data) {
+  const state = data.state;
+  const tiles = [
+    { label: 'Активных пользователей', value: data.active_people,
+      note: `из ${state.users} заведённых` },
+    { label: 'Обращений', value: data.hits,
+      note: `за ${data.period_days} дней` },
+    { label: 'Команд', value: state.teams,
+      note: `${state.tickets} задач всего` },
+    { label: 'Подключений', value: state.connections,
+      note: state.scheduled ? `${state.scheduled} по расписанию` : 'все вручную' },
+    { label: 'Сломанных синхронизаций', value: state.failed_syncs,
+      note: state.failed_syncs ? 'данные устаревают' : 'всё в порядке',
+      cls: state.failed_syncs ? 'critical' : 'good' },
+  ];
+  document.getElementById('admin-tiles').innerHTML = tiles.map(t => `
+    <div class="tile ${t.cls || ''}">
+      <div class="label">${t.label}</div>
+      <div class="value">${t.value}</div>
+      <div class="note">${t.note || ''}</div>
+    </div>`).join('');
+}
+
+function renderUsageSections(data) {
+  const chart = ensureChart('chart-usage-sections');
+  if (!chart) return;
+  if (!data.sections.length) {
+    emptyChart(chart, 'Пока никто ничего не открывал');
+  } else {
+    const sections = [...data.sections].reverse();
+    chart.setOption({
+      ...baseOption(),
+      tooltip: {
+        ...baseOption().tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: params => {
+          const item = sections[params[0].dataIndex];
+          return `<b>${escapeHtml(item.section)}</b><br>`
+            + `обращений: ${item.hits}<br>`
+            + `человек: ${item.people}`;
+        },
+      },
+      xAxis: { type: 'value', ...axisStyle() },
+      yAxis: { type: 'category', ...axisStyle(),
+        data: sections.map(item => item.section) },
+      series: [{
+        type: 'bar', barMaxWidth: 22,
+        data: sections.map(item => item.hits),
+        itemStyle: { color: css('--series-1') },
+      }],
+    }, true);
+  }
+
+  const unused = document.getElementById('unused-sections');
+  // Неиспользуемое важнее популярного: показывает, что построено зря
+  // или что люди не нашли.
+  unused.innerHTML = data.unused_sections.length
+    ? `Ни разу не открывали: ${data.unused_sections.map(escapeHtml).join(', ')}.`
+      + ' Стоит понять — это лишнее или его не находят.'
+    : '';
+}
+
+function renderUsageDays(data) {
+  const chart = ensureChart('chart-usage-days');
+  if (!chart) return;
+  if (!data.by_day.length) return emptyChart(chart, 'Нет данных за период');
+
+  chart.setOption({
+    ...baseOption(),
+    legend: { ...baseOption().legend, data: ['Обращений', 'Человек'] },
+    tooltip: { ...baseOption().tooltip, trigger: 'axis' },
+    xAxis: { type: 'category', ...axisStyle(),
+      data: data.by_day.map(item => formatDay(item.day)) },
+    yAxis: [
+      { type: 'value', ...axisStyle() },
+      { type: 'value', ...axisStyle(), splitLine: { show: false }, minInterval: 1 },
+    ],
+    series: [
+      { name: 'Обращений', type: 'bar', barMaxWidth: 26,
+        data: data.by_day.map(item => item.hits),
+        itemStyle: { color: css('--series-1') } },
+      { name: 'Человек', type: 'line', yAxisIndex: 1, symbolSize: 5,
+        data: data.by_day.map(item => item.people),
+        lineStyle: { color: css('--series-8'), width: 2 },
+        itemStyle: { color: css('--series-8') } },
+    ],
+  }, true);
+}
+
+function renderAdminUsers(users, usageByUser, teams) {
+  const options = teams.map(team =>
+    `<option value="${team.id}">${escapeHtml(team.name)}</option>`).join('');
+
+  document.getElementById('admin-users').innerHTML = `<table>
+    <thead><tr>
+      <th>Пользователь</th><th>Команды</th>
+      <th class="num">Обращений</th><th>Последний вход</th><th></th>
+    </tr></thead>
+    <tbody>${users.map(user => {
+      const stats = usageByUser[user.username] || { hits: 0, last_login_at: null };
+      const chips = Object.entries(user.teams || {}).map(([teamId, role]) => {
+        const team = teams.find(t => String(t.id) === String(teamId));
+        return `<span class="access-chip">
+            ${escapeHtml(team ? team.name : teamId)}: ${ROLE_LABEL[role] || role}
+            <button data-revoke="${escapeHtml(user.username)}"
+                    data-team="${escapeHtml(teamId)}" title="Отобрать">✕</button>
+          </span>`;
+      }).join('');
+      return `
+      <tr>
+        <td>
+          <b>${escapeHtml(user.display_name)}</b>
+          ${user.is_admin ? '<span class="pill">админ</span>' : ''}
+          <div class="muted">${escapeHtml(user.username)}</div>
+        </td>
+        <td>
+          ${user.is_admin ? '<span class="muted">все команды</span>' : chips || ''}
+          ${user.is_admin ? '' : `
+            <select class="access-add" data-grant="${escapeHtml(user.username)}">
+              <option value="">+ доступ…</option>
+              ${options}
+            </select>`}
+        </td>
+        <td class="num">${stats.hits}</td>
+        <td>${stats.last_login_at ? formatDate(stats.last_login_at) : '—'}</td>
+        <td>${user.username === (currentUser && currentUser.username)
+          ? ''
+          : `<button class="ghost" data-delete-user="${escapeHtml(user.username)}">удалить</button>`}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+
+  for (const select of document.querySelectorAll('[data-grant]')) {
+    select.addEventListener('change', () => grantAccess(select));
+  }
+  for (const button of document.querySelectorAll('[data-revoke]')) {
+    button.addEventListener('click', () => revokeAccess(button));
+  }
+  for (const button of document.querySelectorAll('[data-delete-user]')) {
+    button.addEventListener('click', () => deleteUser(button.dataset.deleteUser));
+  }
+}
+
+async function grantAccess(select) {
+  if (!select.value) return;
+  const role = window.confirm(
+    'OK — владелец (может настраивать подключения и статусы команды).\n'
+    + 'Отмена — только просмотр метрик.'
+  ) ? 'owner' : 'viewer';
+
+  const response = await fetch('/api/admin/access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: select.dataset.grant,
+      team_id: Number(select.value),
+      role,
+    }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    window.alert(`Не удалось: ${data.detail || response.statusText}`);
+  }
+  loadAdmin();
+}
+
+async function revokeAccess(button) {
+  const params = new URLSearchParams({
+    username: button.dataset.revoke,
+    team_id: button.dataset.team,
+  });
+  await fetch(`/api/admin/access?${params}`, { method: 'DELETE' });
+  loadAdmin();
+}
+
+async function deleteUser(username) {
+  if (!window.confirm(`Удалить пользователя ${username}? Данные команд останутся.`)) return;
+  const response = await fetch(`/api/admin/users/${encodeURIComponent(username)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    window.alert(`Не удалось: ${data.detail || response.statusText}`);
+  }
+  loadAdmin();
+}
+
+function openUserDialog() {
+  document.getElementById('nu-result').textContent = '';
+  for (const id of ['nu-username', 'nu-display', 'nu-password']) {
+    document.getElementById(id).value = '';
+  }
+  document.getElementById('nu-admin').checked = false;
+  document.getElementById('user-modal').hidden = false;
+}
+
+function closeUserDialog() {
+  document.getElementById('user-modal').hidden = true;
+}
+
+async function submitNewUser() {
+  const result = document.getElementById('nu-result');
+  const response = await fetch('/api/admin/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: document.getElementById('nu-username').value.trim(),
+      display_name: document.getElementById('nu-display').value.trim() || null,
+      password: document.getElementById('nu-password').value,
+      is_admin: document.getElementById('nu-admin').checked,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    result.textContent = data.detail || 'Не удалось создать пользователя.';
+    return;
+  }
+  closeUserDialog();
+  loadAdmin();
+}
+
+async function loadAdmin() {
+  const days = document.getElementById('admin-period').value;
+  const [usageData, users, teams] = await Promise.all([
+    (await fetch(`/api/admin/usage?days=${days}`)).json(),
+    (await fetch('/api/admin/users')).json(),
+    (await fetch('/api/teams')).json(),
+  ]);
+
+  const byUser = {};
+  for (const item of usageData.people) byUser[item.username] = item;
+
+  renderAdminTiles(usageData);
+  renderUsageSections(usageData);
+  renderUsageDays(usageData);
+  renderAdminUsers(users, byUser, teams);
+}
+
+// ============================================================================
 // Профиль пользователя
 // ============================================================================
 
@@ -1404,6 +1646,11 @@ async function loadCurrentUser() {
       ? teams.map(([id, role]) =>
           `Команда ${escapeHtml(id)}: ${escapeHtml(roles[role] || role)}`).join('<br>')
       : 'Команды не назначены';
+
+  // вкладка админки — только администратору; сервер всё равно проверит,
+  // но показывать недоступное незачем
+  const adminTab = document.querySelector('.tab[data-tab="admin"]');
+  if (adminTab) adminTab.hidden = !currentUser.is_admin;
 
   // менять пароль незачем тем, у кого его нет
   document.getElementById('change-password-btn').hidden = Boolean(currentUser.from_sso);
@@ -2567,6 +2814,7 @@ const TAB_LOADERS = {
   forecast: loadForecast,
   quality: loadQuality,
   settings: loadSettings,
+  admin: loadAdmin,
   tickets: loadTickets,
 };
 
@@ -2581,6 +2829,10 @@ async function showTab(name, { force = false } = {}) {
     panel.classList.toggle('active', panel.dataset.panel === name);
   }
   if (location.hash.slice(1) !== name) location.hash = name;
+
+  // фильтры потока к админке и настройкам не относятся — они про сам сервис
+  const filters = document.querySelector('.filters');
+  if (filters) filters.hidden = name === 'admin';
 
   if (loaded[name] && !force) {
     // графики скрытой вкладки не знают своего размера — пересчитываем
@@ -2687,6 +2939,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('change-password-btn')
     .addEventListener('click', openPasswordDialog);
   document.getElementById('pw-submit').addEventListener('click', submitPasswordChange);
+  document.getElementById('admin-period').addEventListener('change', loadAdmin);
+  document.getElementById('add-user-btn').addEventListener('click', openUserDialog);
+  document.getElementById('nu-submit').addEventListener('click', submitNewUser);
+  for (const element of document.querySelectorAll('[data-close-user]')) {
+    element.addEventListener('click', closeUserDialog);
+  }
   for (const element of document.querySelectorAll('[data-close-password]')) {
     element.addEventListener('click', closePasswordDialog);
   }

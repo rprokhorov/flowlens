@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import Engine, text
 
-from flowlens import analytics, auth
+from flowlens import analytics, auth, usage
 from flowlens.analytics import Filters
 from flowlens.core.advice import analyse
 from flowlens.core.quality import build_report
@@ -43,18 +43,34 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     По умолчанию выключено: локальный запуск не должен молча ходить в Jira.
     Включается FLOWLENS_SCHEDULER=1 — для сервиса, а не для чужого ноутбука.
     """
-    task: asyncio.Task[None] | None = None
+    tasks: list[asyncio.Task[None]] = []
     if os.environ.get("FLOWLENS_SCHEDULER") == "1":
         from flowlens.scheduler import run_forever
 
-        task = asyncio.create_task(run_forever(get_engine()))
+        tasks.append(asyncio.create_task(run_forever(get_engine())))
+    tasks.append(asyncio.create_task(_flush_usage_periodically()))
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        # последний сброс: иначе статистика последних минут пропадёт
+        with suppress(Exception):
+            usage.flush(get_engine())
+
+
+async def _flush_usage_periodically(interval_seconds: int = 60) -> None:
+    """Периодически сбрасывать счётчики обращений в базу.
+
+    Копятся в памяти: запись на каждое обращение замедлила бы дашборд
+    ради статистики.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        with suppress(Exception):
+            await asyncio.to_thread(usage.flush, get_engine())
 
 
 app = FastAPI(
@@ -226,6 +242,7 @@ async def authenticate_request(request: Request, call_next):  # type: ignore[no-
         )
 
     request.state.user = user
+    usage.record(user.id, request.url.path)
     return await call_next(request)
 
 
@@ -867,6 +884,122 @@ def post_source_sync(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
+
+
+# --- админская панель --------------------------------------------------------
+
+
+def require_admin(user: auth.User) -> None:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Только для администратора")
+
+
+@app.get("/api/admin/usage")
+def get_admin_usage(
+    engine: EngineDep,
+    user: UserDep,
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
+) -> dict[str, Any]:
+    """Как пользуются продуктом.
+
+    Счётчики агрегатные: сутки, пользователь, раздел. Видно, что живёт,
+    а что никто не открывает — но не то, что человек делал в конкретную минуту.
+    """
+    require_admin(user)
+    data = usage.overview(engine, days)
+    data["unused_sections"] = usage.unused_sections(engine, days)
+    return data
+
+
+@app.get("/api/admin/users")
+def get_admin_users(engine: EngineDep, user: UserDep) -> list[dict[str, Any]]:
+    """Пользователи и их доступ к командам."""
+    require_admin(user)
+    return [person.as_dict() for person in auth.list_users(engine)]
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+    email: str | None = None
+    is_admin: bool = False
+
+
+@app.post("/api/admin/users")
+def post_admin_user(
+    engine: EngineDep, user: UserDep, request: UserCreate
+) -> dict[str, Any]:
+    """Завести пользователя."""
+    require_admin(user)
+    if len(request.password) < 8:
+        raise HTTPException(status_code=422, detail="Пароль короче восьми символов")
+    try:
+        created = auth.create_user(
+            engine,
+            username=request.username,
+            password=request.password,
+            display_name=request.display_name,
+            email=request.email,
+            is_admin=request.is_admin,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return created.as_dict()
+
+
+@app.delete("/api/admin/users/{username}")
+def delete_admin_user(engine: EngineDep, user: UserDep, username: str) -> dict[str, Any]:
+    """Удалить пользователя."""
+    require_admin(user)
+    # запрет на удаление себя: администратор, оставшийся без доступа,
+    # не сможет вернуть его через интерфейс
+    if username == user.username:
+        raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
+    if not auth.delete_user(engine, username):
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return {"deleted": username}
+
+
+class AccessGrant(BaseModel):
+    username: str
+    team_id: int
+    role: str = "viewer"
+
+
+@app.post("/api/admin/access")
+def post_admin_access(
+    engine: EngineDep, user: UserDep, request: AccessGrant
+) -> dict[str, Any]:
+    """Связать пользователя с командой."""
+    require_admin(user)
+    target = auth.get_user(engine, request.username)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    try:
+        auth.grant_access(
+            engine, user_id=target.id, team_id=request.team_id, role=request.role
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return auth.get_user(engine, request.username).as_dict()
+
+
+@app.delete("/api/admin/access")
+def delete_admin_access(
+    engine: EngineDep,
+    user: UserDep,
+    username: Annotated[str, Query()],
+    team_id: Annotated[int, Query()],
+) -> dict[str, Any]:
+    """Отобрать доступ к команде."""
+    require_admin(user)
+    target = auth.get_user(engine, username)
+    if target is None or not auth.revoke_access(
+        engine, user_id=target.id, team_id=team_id
+    ):
+        raise HTTPException(status_code=404, detail="Такого доступа нет")
+    return {"revoked": username, "team_id": team_id}
 
 
 @app.get("/api/people")

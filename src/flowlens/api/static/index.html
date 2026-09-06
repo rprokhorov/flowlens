@@ -44,6 +44,7 @@
     <button class="tab" data-tab="forecast">Прогноз</button>
     <button class="tab" data-tab="quality">Качество данных</button>
     <button class="tab" data-tab="settings">Настройки</button>
+    <button class="tab" data-tab="admin" hidden>Админка</button>
     <button class="tab" data-tab="tickets">Задачи</button>
   </nav>
 
@@ -365,6 +366,44 @@
     </div>
   </section>
 
+  <!-- АДМИНКА -->
+  <section class="panel" data-panel="admin">
+    <div class="tiles" id="admin-tiles"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Чем пользуются</h2>
+        <select id="admin-period">
+          <option value="7">7 дней</option>
+          <option value="30" selected>30 дней</option>
+          <option value="90">90 дней</option>
+        </select>
+      </div>
+      <p class="hint">Счётчики агрегатные — сутки, пользователь, раздел.
+         Видно, что живёт, а что никто не открывает; что человек делал
+         в конкретную минуту — не видно и не собирается.</p>
+      <div class="chart" id="chart-usage-sections"></div>
+      <div id="unused-sections"></div>
+    </div>
+
+    <div class="card">
+      <h2>Активность по дням</h2>
+      <p class="hint">Инструмент, которым перестали пользоваться, обычно
+         не сообщает об этом — это видно только здесь.</p>
+      <div class="chart short" id="chart-usage-days"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Пользователи и доступ</h2>
+        <button id="add-user-btn" class="ghost">Добавить</button>
+      </div>
+      <p class="hint">Доступ к команде отделён от участия в её работе:
+         руководитель может смотреть команду, не будучи её исполнителем.</p>
+      <div class="scroll" id="admin-users"></div>
+    </div>
+  </section>
+
   <!-- ЗАДАЧИ -->
   <section class="panel" data-panel="tickets">
     <div class="card">
@@ -567,6 +606,39 @@ PROJ-11,Bug,done,2026-01-16,2026-01-17,2026-01-19</pre>
       <div id="pw-result"></div>
       <div class="import-actions">
         <button id="pw-submit">Сменить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="user-modal" class="modal" hidden>
+  <div class="modal-box password-box">
+    <div class="modal-head">
+      <h2>Новый пользователь</h2>
+      <button class="ghost" data-close-user>✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span>Логин</span>
+        <input type="text" id="nu-username" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Имя</span>
+        <input type="text" id="nu-display" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Пароль</span>
+        <input type="password" id="nu-password" autocomplete="new-password">
+      </label>
+      <label class="import-replace">
+        <input type="checkbox" id="nu-admin">
+        Права администратора
+      </label>
+      <p class="hint">Пароль не короче восьми символов. Доступ к командам
+         выдаётся отдельно — после создания.</p>
+      <div id="nu-result"></div>
+      <div class="import-actions">
+        <button id="nu-submit">Создать</button>
       </div>
     </div>
   </div>
