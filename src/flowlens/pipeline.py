@@ -175,9 +175,18 @@ def recompute_all(
     # всё по команде первого тикета можно было, пока команда была одна.
     team_cache: dict[int, dict[str, Any]] = {}
 
+    # Запасной справочник: команда могла ещё не завести своих статусов —
+    # например, её только что создали. Тогда берём любой статус с тем же
+    # именем, иначе сохранение интервалов упадёт на отсутствующем ключе.
+    fallback_statuses: dict[str, int] = {}
+    for by_team in statuses_by_team.values():
+        for key, sid in by_team.items():
+            fallback_statuses.setdefault(key, sid)
+
     def team_context(team_id: int) -> dict[str, Any]:
         if team_id not in team_cache:
             refs = dict(people_refs)
+            refs.update(fallback_statuses)
             refs.update(statuses_by_team.get(None, {}))
             refs.update(statuses_by_team.get(team_id, {}))
             refs["calendar_id"] = _calendar_id(engine, team_id)
@@ -191,7 +200,7 @@ def recompute_all(
 
     total_intervals = 0
     anomalous = 0
-    workload: dict[tuple[str, object], DailyLoad] = {}
+    workload: dict[tuple[str, object, int], DailyLoad] = {}
 
     for row in rows:
         events, comments = _load_ticket_history(engine, row.id)
@@ -238,9 +247,13 @@ def recompute_all(
         if start_fact.anomalies or end_fact.anomalies:
             anomalous += 1
 
-        accumulate_workload(row.external_key, intervals, cal, into=workload)  # type: ignore[arg-type]
+        accumulate_workload(  # type: ignore[arg-type]
+            row.external_key, intervals, cal, into=workload, team_id=row.team_id
+        )
 
-    save_workload(engine, workload, refs)  # type: ignore[arg-type]
+    # people_refs, а не refs команды: нагрузка охватывает все команды сразу,
+    # и справочник людей у них общий
+    save_workload(engine, workload, people_refs)  # type: ignore[arg-type]
     return {
         "tickets": len(rows),
         "intervals": total_intervals,

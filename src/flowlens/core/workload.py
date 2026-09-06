@@ -38,10 +38,15 @@ def accumulate_workload(
     ticket_key: str,
     intervals: list[Interval],
     calendar: WorkCalendar,
-    into: dict[tuple[str, date], DailyLoad] | None = None,
+    into: dict[tuple[str, date, int], DailyLoad] | None = None,
     board: dict[str, StatusDef] | None = None,
-) -> dict[tuple[str, date], DailyLoad]:
-    """Разложить владение тикетом по людям и дням.
+    team_id: int = 0,
+) -> dict[tuple[str, date, int], DailyLoad]:
+    """Разложить владение тикетом по людям, дням и командам.
+
+    Команда входит в ключ, потому что человек может работать в нескольких:
+    платформенный разработчик, помогающий продуктовой команде, должен
+    считаться в каждой отдельно, иначе строки перетирают друг друга.
 
     Результат накапливается в `into`, чтобы собирать по многим тикетам.
     """
@@ -54,7 +59,7 @@ def accumulate_workload(
         spec = board[iv.status]
         per_day = business_seconds_by_day(calendar, iv.started_at, iv.ended_at)
         for day, seconds in per_day.items():
-            key = (iv.assignee, day)
+            key = (iv.assignee, day, team_id)
             load = acc.get(key)
             if load is None:
                 load = DailyLoad(person=iv.assignee, day=day)
@@ -72,7 +77,7 @@ def accumulate_workload(
         owner = _last_owner(intervals)
         if owner is not None:
             day = last.started_at.astimezone(calendar.zone).date()
-            key = (owner, day)
+            key = (owner, day, team_id)
             load = acc.get(key)
             if load is None:
                 load = DailyLoad(person=owner, day=day)

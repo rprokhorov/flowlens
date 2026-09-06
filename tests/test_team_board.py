@@ -353,3 +353,102 @@ def test_recompute_uses_each_team_board(data) -> None:
         with data.begin() as conn:
             conn.execute(text("DELETE FROM workflow_status WHERE team_id = :t"), {"t": second})
             conn.execute(text("DELETE FROM team WHERE id = :t"), {"t": second})
+
+
+def test_workload_is_split_between_teams(data) -> None:
+    """Нагрузка должна попадать в команду своего тикета.
+
+    Дефект, который тест закрывает: ключ агрегации был (человек, день),
+    а team_id при сохранении брался из последнего обработанного тикета.
+    Вся нагрузка попадала в одну команду, и вкладка «Нагрузка» у остальных
+    оказывалась пустой.
+    """
+    with data.begin() as conn:
+        calendar_id = conn.execute(
+            text("SELECT calendar_id FROM team WHERE id = 1")
+        ).scalar_one()
+        second = conn.execute(
+            text(
+                "INSERT INTO team (name, calendar_id) VALUES ('workload-split', :cal) "
+                "ON CONFLICT (name, COALESCE(parent_team_id, 0)) DO UPDATE "
+                "SET name = EXCLUDED.name RETURNING id"
+            ),
+            {"cal": calendar_id},
+        ).scalar_one()
+        conn.execute(
+            text(
+                "UPDATE ticket SET team_id = :team WHERE id IN "
+                "(SELECT id FROM ticket ORDER BY id LIMIT 40)"
+            ),
+            {"team": second},
+        )
+
+    try:
+        recompute_all(data)
+        with data.begin() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT team_id, count(*) AS n FROM person_workload_daily "
+                    "GROUP BY team_id"
+                )
+            ).all()
+        by_team = {r.team_id: r.n for r in rows}
+        assert by_team.get(1), "у первой команды нет нагрузки"
+        assert by_team.get(second), "нагрузка второй команды попала не туда"
+    finally:
+        with data.begin() as conn:
+            conn.execute(
+                text("UPDATE ticket SET team_id = 1 WHERE team_id = :t"), {"t": second}
+            )
+        recompute_all(data)
+        with data.begin() as conn:
+            conn.execute(text("DELETE FROM team WHERE id = :t"), {"t": second})
+
+
+def test_person_can_work_in_two_teams(data) -> None:
+    """Один человек за один день может числиться в двух командах.
+
+    Прежний первичный ключ (person_id, day) этого не позволял: строки
+    перетирали друг друга.
+    """
+    with data.begin() as conn:
+        person_id = conn.execute(text("SELECT min(id) FROM person")).scalar_one()
+        calendar_id = conn.execute(
+            text("SELECT calendar_id FROM team WHERE id = 1")
+        ).scalar_one()
+        other = conn.execute(
+            text(
+                "INSERT INTO team (name, calendar_id) VALUES ('two-teams', :cal) "
+                "ON CONFLICT (name, COALESCE(parent_team_id, 0)) DO UPDATE "
+                "SET name = EXCLUDED.name RETURNING id"
+            ),
+            {"cal": calendar_id},
+        ).scalar_one()
+
+    try:
+        with data.begin() as conn:
+            for team in (1, other):
+                conn.execute(
+                    text(
+                        "INSERT INTO person_workload_daily "
+                        "(person_id, day, team_id, active_tickets, owned_business_s, "
+                        " touch_business_s, blocked_business_s) "
+                        "VALUES (:pid, DATE '2026-03-02', :team, 1, 3600, 3600, 0) "
+                        "ON CONFLICT (person_id, day, team_id) DO NOTHING"
+                    ),
+                    {"pid": person_id, "team": team},
+                )
+            stored = conn.execute(
+                text(
+                    "SELECT count(*) FROM person_workload_daily "
+                    "WHERE person_id = :pid AND day = DATE '2026-03-02'"
+                ),
+                {"pid": person_id},
+            ).scalar_one()
+        assert stored == 2, "две команды за один день должны храниться отдельно"
+    finally:
+        with data.begin() as conn:
+            conn.execute(
+                text("DELETE FROM person_workload_daily WHERE day = DATE '2026-03-02'")
+            )
+            conn.execute(text("DELETE FROM team WHERE id = :t"), {"t": other})

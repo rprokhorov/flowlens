@@ -351,13 +351,17 @@ def save_metrics(engine: Engine, ticket_id: int, m: TicketMetrics) -> None:
 
 def save_workload(
     engine: Engine,
-    loads: dict[tuple[str, date], DailyLoad],
+    loads: dict[tuple[str, date, int], DailyLoad],
     refs: dict[str, int],
 ) -> None:
-    """Перезаписать дневную нагрузку."""
+    """Перезаписать дневную нагрузку.
+
+    Команда берётся из ключа, а не из общего справочника: при нескольких
+    командах вся нагрузка иначе записалась бы в одну из них.
+    """
     with engine.begin() as conn:
         conn.execute(text("TRUNCATE person_workload_daily"))
-        for (person, day), load in loads.items():
+        for (person, day, team_id), load in loads.items():
             person_id = refs.get(f"person:{person}")
             if person_id is None:
                 continue
@@ -367,7 +371,7 @@ def save_workload(
                     "  active_tickets, owned_business_s, touch_business_s, "
                     "  blocked_business_s, completed_count) "
                     "VALUES (:pid, :day, :team, :active, :owned, :touch, :blocked, :done) "
-                    "ON CONFLICT (person_id, day) DO UPDATE SET "
+                    "ON CONFLICT (person_id, day, team_id) DO UPDATE SET "
                     "  active_tickets = EXCLUDED.active_tickets, "
                     "  owned_business_s = EXCLUDED.owned_business_s, "
                     "  touch_business_s = EXCLUDED.touch_business_s, "
@@ -377,7 +381,7 @@ def save_workload(
                 {
                     "pid": person_id,
                     "day": day,
-                    "team": refs["team_id"],
+                    "team": team_id,
                     "active": load.active_ticket_count,
                     "owned": load.owned_business_s,
                     "touch": load.touch_business_s,

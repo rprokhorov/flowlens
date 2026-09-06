@@ -24,7 +24,7 @@ def test_handoff_splits_between_people(cal: WorkCalendar) -> None:
     seed = next(s for s in all_scenarios(cal) if s.scenario == "assignee_handoff")
     acc, _ = load_for(seed, cal)
     by_person: dict[str, int] = {}
-    for (person, _day), load in acc.items():
+    for (person, _day, _team), load in acc.items():
         by_person[person] = by_person.get(person, 0) + load.owned_business_s
     assert by_person["ivan"] == WORKDAY
     assert by_person["maria"] == 2 * WORKDAY
@@ -52,7 +52,7 @@ def test_interval_split_across_days(cal: WorkCalendar) -> None:
     b.move_to("done")
     seed = b.build()
     acc, _ = load_for(seed, cal)
-    days = {day: load.owned_business_s for (_p, day), load in acc.items()}
+    days = {day: load.owned_business_s for (_p, day, _team), load in acc.items()}
     assert days[date(2026, 3, 4)] == 2 * HOUR
     assert days[date(2026, 3, 5)] == WORKDAY
     assert days[date(2026, 3, 6)] == HOUR
@@ -66,7 +66,7 @@ def test_weekend_days_absent(cal: WorkCalendar) -> None:
     b.move_to("done")
     seed = b.build()
     acc, _ = load_for(seed, cal)
-    days = {day for (_p, day), _load in acc.items()}
+    days = {day for (_p, day, _team), _load in acc.items()}
     assert date(2026, 3, 7) not in days
     assert date(2026, 3, 8) not in days
     assert days == {date(2026, 3, 6), date(2026, 3, 9)}
@@ -102,7 +102,7 @@ def test_multiple_tickets_accumulate(cal: WorkCalendar) -> None:
         seed = b.build()
         intervals = build_intervals(seed.events, cal, now=seed.observed_at)
         accumulate_workload(seed.key, intervals, cal, into=acc)
-    load = acc[("ivan", date(2026, 3, 4))]
+    load = acc[("ivan", date(2026, 3, 4), 0)]
     assert load.active_ticket_count == 3
     assert load.owned_business_s == 6 * HOUR
     assert load.completed_count == 3
@@ -111,7 +111,11 @@ def test_multiple_tickets_accumulate(cal: WorkCalendar) -> None:
 def test_completed_attributed_to_last_owner(cal: WorkCalendar) -> None:
     seed = next(s for s in all_scenarios(cal) if s.scenario == "assignee_handoff")
     acc, _ = load_for(seed, cal)
-    completed = {p: load.completed_count for (p, _d), load in acc.items() if load.completed_count}
+    completed = {
+        p: load.completed_count
+        for (p, _d, _team), load in acc.items()
+        if load.completed_count
+    }
     assert completed == {"petr": 1}
 
 
@@ -119,7 +123,7 @@ def test_unassigned_time_ignored(cal: WorkCalendar) -> None:
     """Время без исполнителя не приписывается никому."""
     seed = next(s for s in all_scenarios(cal) if s.scenario == "happy_path")
     acc, _ = load_for(seed, cal)
-    assert all(person is not None for (person, _day) in acc)
+    assert all(person is not None for (person, _day, _team) in acc)
 
 
 def test_open_interval_excluded(cal: WorkCalendar) -> None:
