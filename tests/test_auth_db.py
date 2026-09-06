@@ -394,3 +394,51 @@ def test_http_returns_429_when_locked(client, users) -> None:
     response = client.get("/api/summary", headers=basic("test-admin", "admin-pass"))
     assert response.status_code == 429
     assert int(response.headers["Retry-After"]) > 0
+
+
+# --- выход и смена пароля ----------------------------------------------------
+
+
+def test_logout_returns_401(client) -> None:
+    """Basic не умеет выходить: 401 заставляет браузер забыть реквизиты."""
+    response = client.get("/api/logout")
+    assert response.status_code == 401
+    assert "Basic" in response.headers.get("WWW-Authenticate", "")
+
+
+def test_logout_is_public(client, users) -> None:
+    """Путь открыт: иначе middleware вернул бы 401 раньше, и клиент
+    не отличил бы выход от «требуется вход»."""
+    from flowlens.api.app import _is_public
+
+    assert _is_public("/api/logout")
+
+
+def test_change_password_requires_current(client, users) -> None:
+    """Чужой человек за незапертым ноутбуком не должен менять пароль."""
+    response = client.post(
+        "/api/me/password",
+        json={"current_password": "wrong", "new_password": "новый-пароль-12"},
+        headers=basic("test-owner", "owner-pass"),
+    )
+    assert response.status_code == 403
+
+
+def test_change_password_rejects_short(client, users) -> None:
+    response = client.post(
+        "/api/me/password",
+        json={"current_password": "owner-pass", "new_password": "короткий"[:5]},
+        headers=basic("test-owner", "owner-pass"),
+    )
+    assert response.status_code == 422
+
+
+def test_change_password_works(client, users, engine) -> None:
+    response = client.post(
+        "/api/me/password",
+        json={"current_password": "owner-pass", "new_password": "совершенно-новый-1"},
+        headers=basic("test-owner", "owner-pass"),
+    )
+    assert response.status_code == 200
+    assert auth.authenticate(engine, "test-owner", "совершенно-новый-1") is not None
+    assert auth.authenticate(engine, "test-owner", "owner-pass") is None

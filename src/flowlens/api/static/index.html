@@ -17,6 +17,18 @@
             title="Загрузить выгрузку из трекера">Импорт данных</button>
     <button id="export-btn" class="ghost"
             title="Выгрузить текущий срез в файл — показать метрики без доступа к базе">Выгрузить срез</button>
+    <div class="user-menu" id="user-menu" hidden>
+      <button id="user-button" class="ghost" title="Профиль"></button>
+      <div class="user-dropdown" id="user-dropdown" hidden>
+        <div class="user-card">
+          <div class="user-name" id="user-name"></div>
+          <div class="user-role" id="user-role"></div>
+        </div>
+        <div class="user-teams" id="user-teams"></div>
+        <button class="user-action" id="change-password-btn">Сменить пароль</button>
+        <button class="user-action" id="logout-btn">Выйти</button>
+      </div>
+    </div>
     <button id="theme-toggle" title="Переключить тему">◐</button>
   </div>
 
@@ -526,6 +538,35 @@ PROJ-11,Bug,done,2026-01-16,2026-01-17,2026-01-19</pre>
           </div>
           <div id="jira-sync-result"></div>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="password-modal" class="modal" hidden>
+  <div class="modal-box password-box">
+    <div class="modal-head">
+      <h2>Смена пароля</h2>
+      <button class="ghost" data-close-password>✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span>Текущий пароль</span>
+        <input type="password" id="pw-current" autocomplete="current-password">
+      </label>
+      <label class="field">
+        <span>Новый пароль</span>
+        <input type="password" id="pw-new" autocomplete="new-password">
+      </label>
+      <label class="field">
+        <span>Новый пароль ещё раз</span>
+        <input type="password" id="pw-repeat" autocomplete="new-password">
+      </label>
+      <p class="hint">Не короче восьми символов. После смены браузер попросит
+         войти заново — он хранит прежнюю пару логин-пароль.</p>
+      <div id="pw-result"></div>
+      <div class="import-actions">
+        <button id="pw-submit">Сменить</button>
       </div>
     </div>
   </div>

@@ -1366,6 +1366,120 @@ async function loadSle() {
 }
 
 // ============================================================================
+// Профиль пользователя
+// ============================================================================
+
+let currentUser = null;
+
+async function loadCurrentUser() {
+  try {
+    const response = await fetch('/api/me');
+    if (!response.ok) return;
+    currentUser = await response.json();
+  } catch (error) {
+    console.error(error);
+    return;
+  }
+
+  const menu = document.getElementById('user-menu');
+  // при отключённом входе профиль не показываем: выходить не из чего
+  if (currentUser.auth_disabled) {
+    menu.hidden = true;
+    return;
+  }
+  menu.hidden = false;
+
+  const name = currentUser.display_name || currentUser.username;
+  document.getElementById('user-button').textContent = name;
+  document.getElementById('user-name').textContent = name;
+  document.getElementById('user-role').textContent = currentUser.is_admin
+    ? 'Администратор'
+    : currentUser.from_sso ? 'Вход через SSO' : 'Пользователь';
+
+  const teams = Object.entries(currentUser.teams || {});
+  const roles = { owner: 'владелец', viewer: 'просмотр' };
+  document.getElementById('user-teams').innerHTML = currentUser.is_admin
+    ? 'Доступны все команды'
+    : teams.length
+      ? teams.map(([id, role]) =>
+          `Команда ${escapeHtml(id)}: ${escapeHtml(roles[role] || role)}`).join('<br>')
+      : 'Команды не назначены';
+
+  // менять пароль незачем тем, у кого его нет
+  document.getElementById('change-password-btn').hidden = Boolean(currentUser.from_sso);
+}
+
+function toggleUserMenu(force) {
+  const dropdown = document.getElementById('user-dropdown');
+  dropdown.hidden = force !== undefined ? !force : !dropdown.hidden;
+}
+
+async function logout() {
+  // Basic не умеет выходить: браузер помнит пару до закрытия окна. Запрос,
+  // на который сервер отвечает 401, заставляет его забыть сохранённые
+  // реквизиты — после перезагрузки он снова спросит логин.
+  try {
+    await fetch('/api/logout', { headers: { Authorization: 'Basic ' + btoa('logout:logout') } });
+  } catch (error) {
+    console.error(error);
+  }
+  window.location.reload();
+}
+
+function openPasswordDialog() {
+  toggleUserMenu(false);
+  document.getElementById('pw-result').textContent = '';
+  for (const id of ['pw-current', 'pw-new', 'pw-repeat']) {
+    document.getElementById(id).value = '';
+  }
+  document.getElementById('password-modal').hidden = false;
+}
+
+function closePasswordDialog() {
+  document.getElementById('password-modal').hidden = true;
+}
+
+async function submitPasswordChange() {
+  const result = document.getElementById('pw-result');
+  const button = document.getElementById('pw-submit');
+  const current = document.getElementById('pw-current').value;
+  const next = document.getElementById('pw-new').value;
+  const repeat = document.getElementById('pw-repeat').value;
+
+  if (next !== repeat) {
+    result.textContent = 'Новые пароли не совпадают.';
+    return;
+  }
+  if (next.length < 8) {
+    result.textContent = 'Пароль короче восьми символов.';
+    return;
+  }
+
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Меняю…';
+  try {
+    const response = await fetch('/api/me/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: current, new_password: next }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      result.textContent = data.detail || 'Не удалось сменить пароль.';
+      return;
+    }
+    result.textContent = 'Пароль изменён. Сейчас попросим войти заново.';
+    setTimeout(logout, 1500);
+  } catch (error) {
+    result.textContent = `Не удалось: ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
+// ============================================================================
 // Вкладка: настройки
 // ============================================================================
 
@@ -2565,6 +2679,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('sle-fix-btn').addEventListener('click', fixSle);
   document.getElementById('export-btn').addEventListener('click', exportSlice);
   document.getElementById('import-btn').addEventListener('click', openImport);
+  document.getElementById('user-button').addEventListener('click', event => {
+    event.stopPropagation();
+    toggleUserMenu();
+  });
+  document.getElementById('logout-btn').addEventListener('click', logout);
+  document.getElementById('change-password-btn')
+    .addEventListener('click', openPasswordDialog);
+  document.getElementById('pw-submit').addEventListener('click', submitPasswordChange);
+  for (const element of document.querySelectorAll('[data-close-password]')) {
+    element.addEventListener('click', closePasswordDialog);
+  }
+  // клик мимо меню закрывает его — иначе оно висит поверх графиков
+  document.addEventListener('click', () => toggleUserMenu(false));
+  document.getElementById('user-dropdown')
+    .addEventListener('click', event => event.stopPropagation());
   document.getElementById('import-submit').addEventListener('click', submitImport);
   document.getElementById('jira-check').addEventListener('click', checkJira);
   document.getElementById('jira-sync').addEventListener('click', syncJira);
@@ -2603,6 +2732,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (event.key !== 'Escape') return;
     if (!document.getElementById('modal').hidden) closeModal();
     if (!document.getElementById('import-modal').hidden) closeImport();
+    if (!document.getElementById('password-modal').hidden) closePasswordDialog();
+    toggleUserMenu(false);
   });
 
   // делегирование: ключи задач, кнопки «Данные», числа аномалий
@@ -2625,6 +2756,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     for (const chart of Object.values(charts)) chart.resize();
   });
 
+  await loadCurrentUser();
   await loadTeams();
   await loadFilterOptions();
   await showTab(location.hash.slice(1) || 'overview');

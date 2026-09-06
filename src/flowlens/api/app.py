@@ -150,7 +150,9 @@ EngineDep = Annotated[Engine, Depends(get_engine)]
 
 # Открытые пути: всё остальное закрыто. Список именно разрешающий — новый
 # эндпоинт по умолчанию защищён, и забыть его закрыть невозможно.
-PUBLIC_PATHS = frozenset({"/api/health", "/login", "/static", "/favicon.ico"})
+PUBLIC_PATHS = frozenset(
+    {"/api/health", "/api/logout", "/login", "/static", "/favicon.ico"}
+)
 
 
 def _is_public(path: str) -> bool:
@@ -231,6 +233,63 @@ async def authenticate_request(request: Request, call_next):  # type: ignore[no-
 def get_me(user: UserDep) -> dict[str, Any]:
     """Кто вошёл и что ему доступно — для интерфейса."""
     return {**user.as_dict(), "auth_disabled": auth.auth_disabled()}
+
+
+@app.get("/api/logout")
+def get_logout() -> Response:
+    """Выход из Basic-аутентификации.
+
+    Спецификация Basic выхода не предусматривает: браузер помнит реквизиты
+    до закрытия окна. Рабочий приём — ответить 401 на запрос, который браузер
+    считает частью той же защищённой области: он забывает сохранённую пару
+    и в следующий раз снова спросит логин.
+
+    Путь открытый: иначе middleware вернул бы 401 раньше, чем сюда дойдёт
+    управление, и клиент не отличил бы выход от «требуется вход».
+    """
+    return Response(
+        content=json.dumps({"detail": "Сеанс завершён"}, ensure_ascii=False),
+        status_code=401,
+        media_type="application/json",
+        headers={"WWW-Authenticate": 'Basic realm="FlowLens"'},
+    )
+
+
+class PasswordChange(BaseModel):
+    """Смена собственного пароля."""
+
+    current_password: str
+    new_password: str
+
+
+@app.post("/api/me/password")
+def post_change_password(
+    engine: EngineDep, user: UserDep, request: PasswordChange
+) -> dict[str, Any]:
+    """Сменить свой пароль.
+
+    Текущий пароль спрашивается даже у вошедшего: Basic держит реквизиты
+    в браузере, и чужой человек за незапертым ноутбуком иначе сменил бы
+    пароль, не зная старого.
+    """
+    if auth.auth_disabled():
+        raise HTTPException(status_code=400, detail="Вход отключён: менять нечего")
+    if user.external_subject:
+        raise HTTPException(
+            status_code=400, detail="Пароль задаётся в системе единого входа"
+        )
+    if len(request.new_password) < 8:
+        raise HTTPException(status_code=422, detail="Пароль короче восьми символов")
+
+    try:
+        confirmed = auth.authenticate(engine, user.username, request.current_password)
+    except auth.TooManyAttempts as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    if confirmed is None:
+        raise HTTPException(status_code=403, detail="Текущий пароль неверен")
+
+    auth.set_password(engine, user.username, request.new_password)
+    return {"changed": True}
 
 
 @app.get("/api/health")
