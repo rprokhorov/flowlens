@@ -42,9 +42,13 @@ extend-exclude = ["migrations/env.py"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
+# Браузерные тесты исключены из обычного прогона: они на порядок медленнее
+# и требуют установленного chromium. Запуск: pytest tests/browser
 testpaths = ["tests"]
+norecursedirs = ["tests/browser"]
 pythonpath = ["src", "."]
 filterwarnings = ["error::DeprecationWarning"]
+markers = ["browser: сквозные проверки через настоящий браузер"]
 
 [tool.mypy]
 python_version = "3.12"
